@@ -70,9 +70,9 @@ object DBHPartitioner {
     val newEdges = degGraph.triplets.mapPartitions(_.map(et => {
       val key = dbh.getKey(et)
       if (key == et.srcId) {
-        (et.dstId, Edge(et.dstId, et.srcId, et.attr))
+        (et.srcId, Edge(et.dstId, et.srcId, et.attr))
       } else {
-        (et.srcId, Edge(et.srcId, et.dstId, et.attr))
+        (et.dstId, Edge(et.srcId, et.dstId, et.attr))
       }
     })).partitionBy(dbh).map(_._2)
     GraphImpl(input.vertices, newEdges, null.asInstanceOf[VD], storageLevel, storageLevel)
