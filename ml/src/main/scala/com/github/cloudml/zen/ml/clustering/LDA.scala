@@ -322,6 +322,9 @@ object LDA {
       case "sparselda" =>
         println("using SparseLDA sampling algorithm")
         new SparseLDA
+      case "zenlda" =>
+        println("using SparseLDA sampling algorithm")
+        new ZenLDA
       case _ =>
         throw new NoSuchMethodException("No this algorithm or not implemented.")
     }

@@ -1171,7 +1171,6 @@ class ZenLDA extends LDAWordByWord with LDADocByDoc {
     numTopics: Int,
     inferenceOnly: Boolean)
     (ep: EdgePartition[TA, TC]): Iterator[(VertexId, TC)] = {
-    val dscp = numTopics >>> 3
     val totalSize = ep.size
     val lcSrcIds = ep.localSrcIds
     val lcDstIds = ep.localDstIds
@@ -1179,49 +1178,25 @@ class ZenLDA extends LDAWordByWord with LDADocByDoc {
     val vattrs = ep.vertexAttrs
     val data = ep.data
     val vertSize = vattrs.length
-    val results = new Array[(VertexId, TC)](vertSize)
-    val marks = new AtomicIntegerArray(vertSize)
+    val results = Array.tabulate(vertSize)(i => (l2g(i), BSV.zeros[Count](numTopics)))
 
     implicit val es = ExecutionContext.fromExecutorService(Executors.newFixedThreadPool(numThreads))
     val all = Future.traverse(ep.index.iterator)(Function.tupled((_, offset) => Future {
       val si = lcSrcIds(offset)
-      var termTuple = results(si)
-      if (termTuple == null && !inferenceOnly) {
-        termTuple = (l2g(si), BSV.zeros[Count](numTopics))
-        results(si) = termTuple
-      }
-      var termTopics = if (!inferenceOnly) termTuple._2 else null
+      var srcTopics = results(si)._2
       var pos = offset
       while (pos < totalSize && lcSrcIds(pos) == si) {
         val di = lcDstIds(pos)
-        var docTuple = results(di)
-        if (docTuple == null) {
-          if (marks.getAndDecrement(di) == 0) {
-            docTuple = (l2g(di), BSV.zeros[Count](numTopics))
-            results(di) = docTuple
-            marks.set(di, Int.MaxValue)
-          } else {
-            while (marks.get(di) <= 0) {}
-            docTuple = results(di)
-          }
-        }
-        val docTopics = docTuple._2
+        val dstTopics = results(di)._2
         val topics = data(pos)
         var i = 0
         while (i < topics.length) {
           val topic = topics(i)
-          if (!inferenceOnly) termTopics match {
-            case v: BDV[Count] => v(topic) += 1
-            case v: BSV[Count] =>
-              v(topic) += 1
-              if (v.activeSize >= dscp) {
-                termTuple = (l2g(si), toBDV(v))
-                results(si) = termTuple
-                termTopics = termTuple._2
-              }
+          srcTopics.synchronized {
+            srcTopics(topic) += 1
           }
-          docTopics.synchronized {
-            docTopics(topic) += 1
+          dstTopics.synchronized {
+            dstTopics(topic) += 1
           }
           i += 1
         }
@@ -1230,7 +1205,7 @@ class ZenLDA extends LDAWordByWord with LDADocByDoc {
     }))
     Await.ready(all, 1.hour)
     es.shutdown()
-    results.iterator.filter(_ != null)
+    results.iterator
   }
 
   override def perplexPartition(numThreads: Int,
@@ -1352,6 +1327,8 @@ class ZenLDA extends LDAWordByWord with LDADocByDoc {
     val lcSrcIds = ep.localSrcIds
     val lcDstIds = ep.localDstIds
     val l2g = ep.local2global
+    println("num of word src is:" + lcSrcIds.count(i => isTermId(l2g(i))))
+    println("num of doc src is:" + lcSrcIds.count(i => isDocId(l2g(i))))
     val vattrs = ep.vertexAttrs
     val data = ep.data
     val thq = new ConcurrentLinkedQueue(0 until numThreads)
