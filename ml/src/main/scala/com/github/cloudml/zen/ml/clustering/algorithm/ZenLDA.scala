@@ -124,52 +124,118 @@ class ZenLDA(numTopics: Int, numThreads: Int)
         val denseTermTopics = toBDV(termTopics)
         val common = isCommon(gen, startPos, endPos, lcDstIds, vattrs)
         var pos = startPos
-        if (common) {
-          val termBeta_denoms = calc_termBeta_denoms(denoms, beta_denoms, termTopics)
-          while (pos < endPos) {
-            var ind = lcDstIds(pos)
-            if (ind >= 0) {
-              val di = ind
-              val docTopics = vattrs(di).asInstanceOf[Ndk]
-              useds(di) = docTopics.activeSize
-              val topic = data(pos)
-              resetDist_dwbSparse_wOptAdjust(cdfDist, denoms, termBeta_denoms, docTopics, topic)
-              data(pos) = tokenSampling(gen, global, termDist, cdfDist, denseTermTopics, topic)
-              pos += 1
-            } else {
-              val di = lcDstIds(pos + 1)
-              val docTopics = vattrs(di).asInstanceOf[Ndk]
-              useds(di) = docTopics.activeSize
-              resetDist_dwbSparse_wOpt(cdfDist, termBeta_denoms, docTopics)
-              while (ind < 0) {
+        if (sampIter < 30) {
+          if (common) {
+            val termBeta_denoms = calc_termBeta_denoms(denoms, beta_denoms, termTopics)
+            while (pos < endPos) {
+              var ind = lcDstIds(pos)
+              if (ind >= 0) {
+                val di = ind
+                val docTopics = vattrs(di).asInstanceOf[Ndk]
+                useds(di) = docTopics.activeSize
                 val topic = data(pos)
-                data(pos) = tokenResampling(gen, global, termDist, cdfDist, denseTermTopics, docTopics, topic, beta)
+                resetDist_dwbSparse_wOptAdjust(cdfDist, denoms, termBeta_denoms, docTopics, topic)
+                data(pos) = tokenSampling(gen, global, termDist, cdfDist, denseTermTopics, topic)
                 pos += 1
-                ind += 1
+              } else {
+                val di = lcDstIds(pos + 1)
+                val docTopics = vattrs(di).asInstanceOf[Ndk]
+                useds(di) = docTopics.activeSize
+                resetDist_dwbSparse_wOpt(cdfDist, termBeta_denoms, docTopics)
+                while (ind < 0) {
+                  val topic = data(pos)
+                  data(pos) = tokenResampling(gen, global, termDist, cdfDist, denseTermTopics, docTopics, topic, beta)
+                  pos += 1
+                  ind += 1
+                }
+              }
+            }
+          } else {
+            while (pos < endPos) {
+              var ind = lcDstIds(pos)
+              if (ind >= 0) {
+                val di = ind
+                val docTopics = vattrs(di).asInstanceOf[Ndk]
+                useds(di) = docTopics.activeSize
+                val topic = data(pos)
+                resetDist_dwbSparse_wAdjust(cdfDist, denoms, denseTermTopics, docTopics, topic, beta)
+                data(pos) = tokenSampling(gen, global, termDist, cdfDist, denseTermTopics, topic)
+                pos += 1
+              } else {
+                val di = lcDstIds(pos + 1)
+                val docTopics = vattrs(di).asInstanceOf[Ndk]
+                useds(di) = docTopics.activeSize
+                resetDist_dwbSparse(cdfDist, denoms, denseTermTopics, docTopics, beta)
+                while (ind < 0) {
+                  val topic = data(pos)
+                  data(pos) = tokenResampling(gen, global, termDist, cdfDist, denseTermTopics, docTopics, topic, beta)
+                  pos += 1
+                  ind += 1
+                }
               }
             }
           }
         } else {
-          while (pos < endPos) {
-            var ind = lcDstIds(pos)
-            if (ind >= 0) {
-              val di = ind
-              val docTopics = vattrs(di).asInstanceOf[Ndk]
-              useds(di) = docTopics.activeSize
-              val topic = data(pos)
-              resetDist_dwbSparse_wAdjust(cdfDist, denoms, denseTermTopics, docTopics, topic, beta)
-              data(pos) = tokenSampling(gen, global, termDist, cdfDist, denseTermTopics, topic)
-              pos += 1
-            } else {
-              val di = lcDstIds(pos + 1)
-              val docTopics = vattrs(di).asInstanceOf[Ndk]
-              useds(di) = docTopics.activeSize
-              resetDist_dwbSparse(cdfDist, denoms, denseTermTopics, docTopics, beta)
-              while (ind < 0) {
-                val topic = data(pos)
-                data(pos) = tokenResampling(gen, global, termDist, cdfDist, denseTermTopics, docTopics, topic, beta)
+          if (common) {
+            val termBeta_denoms = calc_termBeta_denoms(denoms, beta_denoms, termTopics)
+            while (pos < endPos) {
+              var ind = lcDstIds(pos)
+              if (ind >= 0) {
+                val di = ind
+                val docTopics = vattrs(di).asInstanceOf[Ndk]
+                useds(di) = docTopics.activeSize
+                val scti = data(pos)
+                val topic = scti & 0xFFFF
+                val sci = scti >>> 16
+                val nsc = sci & 0xFF
+                val ncc = sci >>> 8
+                val ndc = ncc - nsc
+                val beSampled = ndc <= 0 || gen.nextInt(1 << ndc) == 0
+                val nscti = if (beSampled) {
+                  resetDist_dwbSparse_wOptAdjust(cdfDist, denoms, termBeta_denoms, docTopics, topic)
+                  val newTopic = tokenSampling(gen, global, termDist, cdfDist, denseTermTopics, topic)
+                  val nsci = if (newTopic != topic) 0 else ncc + gen.nextInt(2)
+                  nsci << 16 + newTopic
+                } else {
+                  (sci + 1) << 16 + topic
+                }
+                data(pos) = nscti
                 pos += 1
-                ind += 1
+              } else {
+                val di = lcDstIds(pos + 1)
+                val docTopics = vattrs(di).asInstanceOf[Ndk]
+                useds(di) = docTopics.activeSize
+                resetDist_dwbSparse_wOpt(cdfDist, termBeta_denoms, docTopics)
+                while (ind < 0) {
+                  val topic = data(pos)
+                  data(pos) = tokenResampling(gen, global, termDist, cdfDist, denseTermTopics, docTopics, topic, beta)
+                  pos += 1
+                  ind += 1
+                }
+              }
+            }
+          } else {
+            while (pos < endPos) {
+              var ind = lcDstIds(pos)
+              if (ind >= 0) {
+                val di = ind
+                val docTopics = vattrs(di).asInstanceOf[Ndk]
+                useds(di) = docTopics.activeSize
+                val topic = data(pos)
+                resetDist_dwbSparse_wAdjust(cdfDist, denoms, denseTermTopics, docTopics, topic, beta)
+                data(pos) = tokenSampling(gen, global, termDist, cdfDist, denseTermTopics, topic)
+                pos += 1
+              } else {
+                val di = lcDstIds(pos + 1)
+                val docTopics = vattrs(di).asInstanceOf[Ndk]
+                useds(di) = docTopics.activeSize
+                resetDist_dwbSparse(cdfDist, denoms, denseTermTopics, docTopics, beta)
+                while (ind < 0) {
+                  val topic = data(pos)
+                  data(pos) = tokenResampling(gen, global, termDist, cdfDist, denseTermTopics, docTopics, topic, beta)
+                  pos += 1
+                  ind += 1
+                }
               }
             }
           }
