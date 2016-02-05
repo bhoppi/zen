@@ -123,7 +123,7 @@ class ZenLDA(numTopics: Int, numThreads: Int)
         lazy val denseTermTopics = toBDV(termTopics)
         val common = isCommon(gen, startPos, endPos, lcDstIds, vattrs)
         var pos = startPos
-        if (sampIter < 30) {
+        if (sampIter < 40) {
           if (common) {
             val termBeta_denoms = calc_termBeta_denoms(denoms, beta_denoms, termTopics)
             while (pos < endPos) {
@@ -186,7 +186,7 @@ class ZenLDA(numTopics: Int, numThreads: Int)
               val ndc = ncc - nsc
               val beSampled = ndc <= 0 || gen.nextInt(1 << ndc) == 0
               val ncsi = if (beSampled) {
-                var ind = lcDstIds(pos)
+                var ind = lcDstIds(iPos)
                 if (ind >= 0) {
                   val di = ind
                   val docTopics = vattrs(di).asInstanceOf[Ndk]
@@ -198,7 +198,7 @@ class ZenLDA(numTopics: Int, numThreads: Int)
                   pos += 1
                   if (newTopic != topic) 0 else (ncc + gen.nextInt(2)) << 8
                 } else {
-                  val di = lcDstIds(pos + 1)
+                  val di = lcDstIds(iPos + 1)
                   val docTopics = vattrs(di).asInstanceOf[Ndk]
                   useds(di) = docTopics.activeSize
                   resetDist_dwbSparse_wOpt(cdfDist, termBeta_denoms, docTopics)

@@ -158,7 +158,7 @@ abstract class LDAAlgorithm(numTopics: Int,
       val data = ep.data
       implicit val es = initExecutionContext(numThreads)
       val all = lcSrcIds.indices.by(3).map { lsi => withFuture {
-        var cc_th = 0
+        var cc_th = 0L
         val startPos = lcSrcIds(lsi + 1)
         val endPos = lcSrcIds(lsi + 2)
         var pos = startPos
