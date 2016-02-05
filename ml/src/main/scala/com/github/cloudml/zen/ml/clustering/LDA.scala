@@ -160,6 +160,9 @@ class LDA(@transient var edges: EdgeRDDImpl[TA, _],
     }
     val elapsedSeconds = (System.nanoTime - startedAt) / 1e9
     println(s"Sampling & update paras $sampIter takes: $elapsedSeconds secs")
+
+    val asr = algo.calcSamplingRate(edges, numTokens)
+    println(s"average sampling rate is $asr")
   }
 
   def toLDAModel: DistributedLDAModel = {

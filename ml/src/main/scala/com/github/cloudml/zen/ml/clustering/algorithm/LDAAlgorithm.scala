@@ -150,6 +150,33 @@ abstract class LDAAlgorithm(numTopics: Int,
     new LDALogLikelihood(wllh, dllh)
   }
 
+  def calcSamplingRate(edges: EdgeRDDImpl[Int, _],
+    numTokens: Long): Double = {
+    val ccs = edges.partitionsRDD.map { case (_, ep) =>
+      val lcSrcIds = ep.localSrcIds
+      val lcDstIds = ep.localDstIds
+      val data = ep.data
+      implicit val es = initExecutionContext(numThreads)
+      val all = lcSrcIds.indices.by(3).map { lsi => withFuture {
+        var cc_th = 0
+        val startPos = lcSrcIds(lsi + 1)
+        val endPos = lcSrcIds(lsi + 2)
+        var pos = startPos
+        while (pos < endPos) {
+          val ind = lcDstIds(pos)
+          val numLinks = if (ind >= 0) 1 else -ind
+          if ((data(pos) & 0xFF0000) == 0) {
+            cc_th += numLinks
+          }
+          pos += numLinks
+        }
+        cc_th
+      }}
+      withAwaitResultAndClose(Future.reduce(all)(_ + _))
+    }.collect()
+    ccs.par.sum.toDouble / numTokens
+  }
+
   def refreshEdgeAssociations(edges: EdgeRDDImpl[TA, _],
     verts: VertexRDDImpl[TC]): EdgeRDDImpl[TA, Nvk] = {
     val shippedVerts = verts.partitionsRDD.mapPartitions(_.flatMap { vp =>
