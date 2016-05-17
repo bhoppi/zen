@@ -206,6 +206,9 @@ object LDATrainer {
       case "aliaslda" =>
         println("using AliasLDA sampling algorithm.")
         new AliasLDA(numTopics, numThreads)
+      case "aliaslda_mcem" =>
+        println("using MCEM variant AliasLDA sampling algorithm.")
+        new AliasLDA_MCEM(numTopics, numThreads)
       case "sparselda" =>
         println("using SparseLDA sampling algorithm")
         new SparseLDA(numTopics, numThreads)

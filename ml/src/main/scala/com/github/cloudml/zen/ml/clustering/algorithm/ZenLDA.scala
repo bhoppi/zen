@@ -208,8 +208,7 @@ class ZenLDA(numTopics: Int, numThreads: Int)
     if (genSum < dwbSum) {
       dwb.sampleFrom(genSum, gen)
     } else if (genSum < sum23) {
-      val rr = 1.0 / denseTermTopics(curTopic)
-      wa.resampleFrom(genSum - dwbSum, gen, curTopic, rr)
+      wa.resampleFrom(genSum - dwbSum, gen, curTopic, 1.0 / denseTermTopics(curTopic))
     } else {
       ab.sampleFrom(genSum - sum23, gen)
     }
@@ -228,13 +227,13 @@ class ZenLDA(numTopics: Int, numThreads: Int)
     val distSum = sum23 + ab.norm
     val genSum = gen.nextDouble() * distSum
     if (genSum < dwbSum) {
-      val a = 1.0 / (denseTermTopics(curTopic) + beta)
-      val b = 1.0 / docTopics(curTopic)
-      val rr = a + b - a * b
-      dwb.resampleFrom(genSum, gen, curTopic, rr)
+      dwb.resampleFrom(genSum, gen, curTopic, {
+        val a = 1.0 / (denseTermTopics(curTopic) + beta)
+        val b = 1.0 / docTopics(curTopic)
+        a + b - a * b
+      })
     } else if (genSum < sum23) {
-      val rr = 1.0 / denseTermTopics(curTopic)
-      wa.resampleFrom(genSum - dwbSum, gen, curTopic, rr)
+      wa.resampleFrom(genSum - dwbSum, gen, curTopic, 1.0 / denseTermTopics(curTopic))
     } else {
       ab.sampleFrom(genSum - sum23, gen)
     }

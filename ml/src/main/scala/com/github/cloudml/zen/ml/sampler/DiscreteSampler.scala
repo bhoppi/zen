@@ -34,12 +34,16 @@ trait DiscreteSampler[@specialized(Double, Int, Float, Long) T] extends Sampler[
 
   @tailrec final def resampleRandom(gen: Random,
     state: Int,
-    residualRate: Double,
+    residualRate: => Double,
     numResampling: Int = 2)(implicit ev: spNum[T]): Int = {
     val newState = sampleRandom(gen)
-    if (newState == state && numResampling >= 0 && used > 1 &&
-      (residualRate >= 1.0 || gen.nextDouble() < residualRate)) {
-      resampleRandom(gen, state, residualRate, numResampling - 1)
+    if (newState == state && numResampling >= 0 && used > 1) {
+      val r = residualRate
+      if (residualRate >= 1.0 || gen.nextDouble() < residualRate) {
+        resampleRandom(gen, state, r, numResampling - 1)
+      } else {
+        newState
+      }
     } else {
       newState
     }
@@ -48,13 +52,17 @@ trait DiscreteSampler[@specialized(Double, Int, Float, Long) T] extends Sampler[
   @tailrec final def resampleFrom(base: T,
     gen: Random,
     state: Int,
-    residualRate: Double,
+    residualRate: => Double,
     numResampling: Int = 2)(implicit ev: spNum[T]): Int = {
     val newState = sampleFrom(base, gen)
-    if (newState == state && numResampling >= 0 && used > 1 &&
-      (residualRate >= 1.0 || gen.nextDouble() < residualRate)) {
-      val newBase = ev.fromDouble(gen.nextDouble() * ev.toDouble(norm))
-      resampleFrom(newBase, gen, state, residualRate, numResampling - 1)
+    if (newState == state && numResampling >= 0 && used > 1) {
+      val r = residualRate
+      if (r >= 1.0 || gen.nextDouble() < r) {
+        val newBase = ev.fromDouble(gen.nextDouble() * ev.toDouble(norm))
+        resampleFrom(newBase, gen, state, r, numResampling - 1)
+      } else {
+        newState
+      }
     } else {
       newState
     }
