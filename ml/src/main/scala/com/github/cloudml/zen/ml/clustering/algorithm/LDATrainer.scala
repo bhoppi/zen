@@ -197,6 +197,9 @@ object LDATrainer {
       case "zenlda" =>
         println("using ZenLDA sampling algorithm.")
         new ZenLDA(numTopics, numThreads)
+      case "zenlda_cgs" =>
+        println("using CGS variant ZenLDA sampling algorithm.")
+        new ZenLDA_CGS(numTopics, numThreads)
       case "lightlda" =>
         println("using LightLDA sampling algorithm.")
         new LightLDA(numTopics, numThreads)

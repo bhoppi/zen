@@ -88,7 +88,6 @@ class AliasLDA_MCEM(numTopics: Int, numThreads: Int)
     val denoms = calc_denoms(topicCounters, betaSum)
     val alphak_denoms = calc_alphak_denoms(denoms, alphaAS, betaSum, alphaRatio)
 
-    val totalSize = ep.size
     val lcSrcIds = ep.localSrcIds
     val lcDstIds = ep.localDstIds
     val vattrs = ep.vertexAttrs
