@@ -104,7 +104,7 @@ class AliasLDA_MCEM(numTopics: Int, numThreads: Int)
     resetDist_abDense(global, alphak_denoms, beta)
 
     implicit val es = initExecutionContext(numThreads)
-    val all = Future.traverse(ep.index.iterator) { case (_, startPos) => withFuture {
+    val all = Future.traverse(lcSrcIds.indices.by(3).iterator) { lsi => withFuture {
       val thid = thq.poll() - 1
       try {
         var gen = gens(thid)
@@ -115,11 +115,13 @@ class AliasLDA_MCEM(numTopics: Int, numThreads: Int)
         }
         val docDist = docDists(thid)
 
-        val si = lcSrcIds(startPos)
+        val si = lcSrcIds(lsi)
+        val startPos = lcSrcIds(lsi + 1)
+        val endPos = lcSrcIds(lsi + 2)
         val docTopics = vattrs(si).asInstanceOf[Ndk]
         useds(si) = docTopics.activeSize
         var pos = startPos
-        while (pos < totalSize && lcSrcIds(pos) == si) {
+        while (pos < endPos) {
           var ind = lcDstIds(pos)
           if (ind >= 0) {
             val di = ind
@@ -199,6 +201,88 @@ class AliasLDA_MCEM(numTopics: Int, numThreads: Int)
     } else {
       ab.sampleFrom(genSum - sum23, gen)
     }
+  }
+
+  override def countPartition(ep: EdgePartition[TA, Int]): Iterator[NvkPair] = {
+    val lcSrcIds = ep.localSrcIds
+    val lcDstIds = ep.localDstIds
+    val l2g = ep.local2global
+    val useds = ep.vertexAttrs
+    val data = ep.data
+    val vertSize = useds.length
+    val results = new Array[NvkPair](vertSize)
+
+    implicit val es = initExecutionContext(numThreads)
+    val all0 = Future.traverse(Range(0, numThreads).iterator) { thid => withFuture {
+      var i = thid
+      while (i < vertSize) {
+        val vid = l2g(i)
+        val used = useds(i)
+        val counter: Nvk = if (isTermId(vid) && used >= dscp) {
+          new BDV(new Array[Count](numTopics))
+        } else {
+          val len = math.max(used >>> 1, 2)
+          new BSV(new Array[Int](len), new Array[Count](len), 0, numTopics)
+        }
+        results(i) = (vid, counter)
+        i += numThreads
+      }
+    }}
+    withAwaitReady(all0)
+
+    val all = Future.traverse(lcSrcIds.indices.by(3).iterator) { lsi => withFuture {
+      val si = lcSrcIds(lsi)
+      val startPos = lcSrcIds(lsi + 1)
+      val endPos = lcSrcIds(lsi + 2)
+      val docTopics = results(si)._2
+      var pos = startPos
+      while (pos < endPos) {
+        var ind = lcDstIds(pos)
+        if (ind >= 0) {
+          val di = ind
+          val termTopics = results(di)._2
+          val topic = data(pos)
+          docTopics(topic) += 1
+          termTopics.synchronized {
+            termTopics(topic) += 1
+          }
+          pos += 1
+        } else {
+          val di = lcDstIds(pos + 1)
+          val termTopics = results(di)._2
+          while (ind < 0) {
+            val topic = data(pos)
+            docTopics(topic) += 1
+            termTopics.synchronized {
+              termTopics(topic) += 1
+            }
+            pos += 1
+            ind += 1
+          }
+        }
+      }
+    }}
+    withAwaitReady(all)
+
+    val all2 = Future.traverse(Range(0, numThreads).iterator) { thid => withFuture {
+      var i = thid
+      while (i < vertSize) {
+        val tuple = results(i)
+        val vid = tuple._1
+        if (isTermId(vid)) tuple._2 match {
+          case v: BDV[Count] =>
+            val used = v.data.count(_ > 0)
+            if (used < dscp) {
+              results(i) = (vid, toBSV(v, used))
+            }
+          case _ =>
+        }
+        i += numThreads
+      }
+    }}
+    withAwaitReadyAndClose(all2)
+
+    results.iterator
   }
 
   def resetDist_abDense(ab: AliasTable[Double],
