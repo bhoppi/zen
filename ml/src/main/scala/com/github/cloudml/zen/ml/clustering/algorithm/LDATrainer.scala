@@ -215,6 +215,9 @@ object LDATrainer {
       case "sparselda" =>
         println("using SparseLDA sampling algorithm")
         new SparseLDA(numTopics, numThreads)
+      case "sparselda_mcem" =>
+        println("using MCEM variant SparseLDA sampling algorithm")
+        new SparseLDA_MCEM(numTopics, numThreads)
       case _ =>
         throw new NoSuchMethodException("No this algorithm or not implemented.")
     }
