@@ -203,6 +203,9 @@ object LDATrainer {
       case "lightlda" =>
         println("using LightLDA sampling algorithm.")
         new LightLDA(numTopics, numThreads)
+      case "lightlda_mcem" =>
+        println("using MCEM variant LightLDA sampling algorithm.")
+        new LightLDA_MCEM(numTopics, numThreads)
       case "f+lda" =>
         println("using F+LDA sampling algorithm.")
         new FPlusLDA(numTopics, numThreads)
