@@ -209,6 +209,9 @@ object LDATrainer {
       case "f+lda" =>
         println("using F+LDA sampling algorithm.")
         new FPlusLDA(numTopics, numThreads)
+      case "f+lda_mcem" =>
+        println("using MCEM variant F+LDA sampling algorithm.")
+        new FPlusLDA_MCEM(numTopics, numThreads)
       case "aliaslda" =>
         println("using AliasLDA sampling algorithm.")
         new AliasLDA(numTopics, numThreads)
