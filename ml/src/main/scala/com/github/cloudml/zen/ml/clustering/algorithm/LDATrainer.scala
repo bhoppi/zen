@@ -203,9 +203,15 @@ object LDATrainer {
       case "lightlda" =>
         println("using LightLDA sampling algorithm.")
         new LightLDA(numTopics, numThreads)
+      case "lightlda_mcem" =>
+        println("using MCEM variant LightLDA sampling algorithm.")
+        new LightLDA_MCEM(numTopics, numThreads)
       case "f+lda" =>
         println("using F+LDA sampling algorithm.")
         new FPlusLDA(numTopics, numThreads)
+      case "f+lda_mcem" =>
+        println("using MCEM variant F+LDA sampling algorithm.")
+        new FPlusLDA_MCEM(numTopics, numThreads)
       case "aliaslda" =>
         println("using AliasLDA sampling algorithm.")
         new AliasLDA(numTopics, numThreads)
@@ -215,6 +221,9 @@ object LDATrainer {
       case "sparselda" =>
         println("using SparseLDA sampling algorithm")
         new SparseLDA(numTopics, numThreads)
+      case "sparselda_mcem" =>
+        println("using MCEM variant SparseLDA sampling algorithm")
+        new SparseLDA_MCEM(numTopics, numThreads)
       case _ =>
         throw new NoSuchMethodException("No this algorithm or not implemented.")
     }

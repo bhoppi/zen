@@ -60,7 +60,7 @@ class CumulativeDist[@specialized(Double, Int, Float, Long) T: ClassTag](implici
 
   def apply(state: Int): T = {
     val i = binarySelect(_space, state, 0, _used, greater=true)
-    if (_space(i) == state) {
+    if (i < _space.length && _space(i) == state) {
       if (i == 0) _cdf(0) else ev.minus(_cdf(i), _cdf(i - 1))
     } else {
       ev.zero

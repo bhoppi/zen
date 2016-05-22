@@ -131,13 +131,13 @@ class ZenLDA_CGS(numTopics: Int, numThreads: Int)
     beta: Double,
     betaSum: Double,
     alphaRatio: Double)
-    (termTopics: Nwk, docTopics: Ndk)
+    (denseTermTopics: BDV[Count], docTopics: Ndk)
     (curTopic: Int)(i: Int): Double = {
     val adjust = if (i == curTopic) -1 else 0
     val nk = topicCounters(i)
     val ndk = docTopics.synchronized(docTopics(i))
     val alphak = (nk + alphaAS) * alphaRatio
-    (ndk + adjust + alphak) * (termTopics(i) + adjust + beta) / (nk + adjust + betaSum)
+    (ndk + adjust + alphak) * (denseTermTopics(i) + adjust + beta) / (nk + adjust + betaSum)
   }
 
   def resetDist_abDense(ab: AliasTable[Double],

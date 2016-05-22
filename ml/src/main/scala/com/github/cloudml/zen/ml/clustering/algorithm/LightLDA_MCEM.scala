@@ -31,7 +31,7 @@ import scala.collection.JavaConversions._
 import scala.concurrent.Future
 
 
-class LightLDA(numTopics: Int, numThreads: Int)
+class LightLDA_MCEM(numTopics: Int, numThreads: Int)
   extends LDATrainerByWord(numTopics: Int, numThreads: Int) {
   override def samplePartition(numPartitions: Int,
     sampIter: Int,
@@ -46,6 +46,9 @@ class LightLDA(numTopics: Int, numThreads: Int)
     val alphaSum = alpha * numTopics
     val betaSum = beta * numTerms
     val alphaRatio = calc_alphaRatio(alphaSum, numTokens, alphaAS)
+    val denoms = calc_denoms(topicCounters, betaSum)
+    val alphak_denoms = calc_alphak_denoms(denoms, alphaAS, betaSum, alphaRatio)
+    val beta_denoms = calc_beta_denoms(denoms, beta)
 
     val lcSrcIds = ep.localSrcIds
     val lcDstIds = ep.localDstIds
@@ -62,8 +65,8 @@ class LightLDA(numTopics: Int, numThreads: Int)
     val termDists = new Array[AliasTable[Double]](numThreads)
     val MHSamps = new Array[MetropolisHastings](numThreads)
     val compSamps = new Array[CompositeSampler](numThreads)
-    resetDist_aDense(alphaDist, topicCounters, alphaAS, alphaRatio)
-    resetDist_bDense(betaDist, topicCounters, beta, betaSum)
+    resetDist_aDense(alphaDist, alphak_denoms)
+    resetDist_bDense(betaDist, beta_denoms)
     val CGSCurry = tokenOrigProb(topicCounters, alphaAS, beta, betaSum, alphaRatio) _
 
     implicit val es = initExecutionContext(numThreads)
@@ -87,21 +90,14 @@ class LightLDA(numTopics: Int, numThreads: Int)
         val endPos = lcSrcIds(lsi + 2)
         val termTopics = vattrs(si)
         useds(si) = termTopics.activeSize
-        resetDist_wSparse(termDist, topicCounters, termTopics, betaSum)
+        resetDist_wSparse(termDist, denoms, termTopics)
         val denseTermTopics = toBDV(termTopics)
         var pos = startPos
         while (pos < endPos) {
           val di = lcDstIds(pos)
           val docTopics = vattrs(di).asInstanceOf[Ndk]
           useds(di) = docTopics.activeSize
-          if (gen.nextDouble() < 1e-6) {
-            resetDist_aDense(alphaDist, topicCounters, alphaAS, alphaRatio)
-            resetDist_bDense(betaDist, topicCounters, beta, betaSum)
-          }
-          if (gen.nextDouble() < 1e-4) {
-            resetDist_wSparse(termDist, topicCounters, denseTermTopics, betaSum)
-          }
-          val docDist = dSparseCached(docCache, di, gen.nextDouble() < 1e-2).getOrElse {
+          val docDist = dSparseCached(docCache, di, needRefresh=false).getOrElse {
             resetCache_dSparse(docCache, di, docTopics)
           }
           var topic = data(pos)
@@ -117,18 +113,8 @@ class LightLDA(numTopics: Int, numThreads: Int)
             }
             MHSamp.resetProb(CGSFunc, compSamp, topic)
             val newTopic = MHSamp.sampleRandom(gen)
-            if (newTopic != topic) {
-              data(pos) = newTopic
-              topicCounters(topic) -= 1
-              topicCounters(newTopic) += 1
-              denseTermTopics(topic) -= 1
-              denseTermTopics(newTopic) += 1
-              docTopics.synchronized {
-                docTopics(topic) -= 1
-                docTopics(newTopic) += 1
-              }
-              topic = newTopic
-            }
+            data(pos) = newTopic
+            topic = newTopic
             docCycle = !docCycle
             mh += 1
           }
@@ -152,28 +138,18 @@ class LightLDA(numTopics: Int, numThreads: Int)
     (curTopic: Int)(i: Int): Double = {
     val adjust = if (i == curTopic) -1 else 0
     val nk = topicCounters(i)
-    val ndk = docTopics.synchronized(docTopics(i))
     val alphak = (nk + alphaAS) * alphaRatio
-    (ndk + adjust + alphak) * (denseTermTopics(i) + adjust + beta) / (nk + adjust + betaSum)
+    (docTopics(i) + adjust + alphak) * (denseTermTopics(i) + adjust + beta) / (nk + adjust + betaSum)
   }
 
   def resetDist_bDense(b: AliasTable[Double],
-    topicCounters: BDV[Count],
-    beta: Double,
-    betaSum: Double): Unit = {
-    val probs = new Array[Double](numTopics)
-    var i = 0
-    while (i < numTopics) {
-      probs(i) = beta / (topicCounters(i) + betaSum)
-      i += 1
-    }
-    b.resetDist(probs, null, numTopics)
+    beta_denoms: BDV[Double]): Unit = {
+    b.resetDist(beta_denoms.data, null, numTopics)
   }
 
   def resetDist_wSparse(ws: AliasTable[Double],
-    topicCounters: BDV[Count],
-    termTopics: Nwk,
-    betaSum: Double): Unit = termTopics match {
+    denoms: BDV[Double],
+    termTopics: Nwk): Unit = termTopics match {
     case v: BDV[Count] =>
       val data = v.data
       val probs = new Array[Double](numTopics)
@@ -183,7 +159,7 @@ class LightLDA(numTopics: Int, numThreads: Int)
       while (i < numTopics) {
         val cnt = data(i)
         if (cnt > 0) {
-          probs(psize) = cnt / (topicCounters(i) + betaSum)
+          probs(psize) = cnt * denoms(i)
           space(psize) = i
           psize += 1
         }
@@ -197,23 +173,15 @@ class LightLDA(numTopics: Int, numThreads: Int)
       val probs = new Array[Double](used)
       var i = 0
       while (i < used) {
-        probs(i) = data(i) / (topicCounters(index(i)) + betaSum)
+        probs(i) = data(i) * denoms(index(i))
         i += 1
       }
-      ws.resetDist(probs, index.clone(), used)
+      ws.resetDist(probs, index, used)
   }
 
   def resetDist_aDense(a: AliasTable[Double],
-    topicCounters: BDV[Count],
-    alphaAS: Double,
-    alphaRatio: Double): Unit = {
-    val probs = new Array[Double](numTopics)
-    var i = 0
-    while (i < numTopics) {
-      probs(i) = alphaRatio * (topicCounters(i) + alphaAS)
-      i += 1
-    }
-    a.resetDist(probs, null, numTopics)
+    alphak_denoms: BDV[Double]): Unit = {
+    a.resetDist(alphak_denoms.data, null, numTopics)
   }
 
   def dSparseCached(cache: Array[SoftReference[AliasTable[Count]]],
@@ -230,10 +198,9 @@ class LightLDA(numTopics: Int, numThreads: Int)
   def resetCache_dSparse(cache: Array[SoftReference[AliasTable[Count]]],
     ci: Int,
     docTopics: Ndk): AliasTable[Count] = {
-    val tmpDocTopics = docTopics.synchronized(docTopics.copy)
-    val used = tmpDocTopics.used
-    val index = tmpDocTopics.index
-    val data = tmpDocTopics.data
+    val used = docTopics.used
+    val index = docTopics.index
+    val data = docTopics.data
     val table = new AliasTable[Count].addAuxDist(new FlatDist[Count](isSparse=true).reset(numTopics))
     table.resetDist(data, index, used)
     cache(ci) = new SoftReference(table)
