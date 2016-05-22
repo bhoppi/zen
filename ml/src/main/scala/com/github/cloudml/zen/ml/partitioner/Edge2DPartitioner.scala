@@ -25,51 +25,35 @@ import org.apache.spark.storage.StorageLevel
 
 import scala.reflect.ClassTag
 
-/**
- * Degree-Based Hashing, the paper:
- * Distributed Power-law Graph Computing: Theoretical and Empirical Analysis
- */
-class DBHPartitioner(val partitions: Int, val threshold: Int = 0)
-  extends HashPartitioner(partitions) {
-  /**
-   * Default DBH doesn't consider the situation where both the degree of src and
-   * dst vertices are both small than a given threshold value
-   */
-  def getKey(et: EdgeTriplet[Int, _]): Long = {
-    val srcId = et.srcId
-    val dstId = et.dstId
-    val srcDeg = et.srcAttr
-    val dstDeg = et.dstAttr
-    val maxDeg = math.max(srcDeg, dstDeg)
-    val minDegId = if (maxDeg == srcDeg) dstId else srcId
-    val maxDegId = if (maxDeg == srcDeg) srcId else dstId
-    if (maxDeg < threshold) {
-      maxDegId
-    } else {
-      minDegId
-    }
+
+class Edge2DPartitioner(val partitions: Int) extends HashPartitioner(partitions) {
+  val mixingPrime = 1125899906842597L
+  val ceilSqrtNumParts = math.ceil(math.sqrt(partitions)).toInt
+
+  def getKey(et: EdgeTriplet[_, _]): Long = {
+    val col = (math.abs(et.srcId * mixingPrime) % ceilSqrtNumParts).toInt
+    val row = (math.abs(et.dstId * mixingPrime) % ceilSqrtNumParts).toInt
+    col * ceilSqrtNumParts + row
   }
 
   override def equals(other: Any): Boolean = other match {
-    case dbh: DBHPartitioner =>
-      dbh.numPartitions == numPartitions
+    case edp: Edge2DPartitioner =>
+      edp.numPartitions == numPartitions
     case _ =>
       false
   }
 }
 
-object DBHPartitioner {
-  def partitionByDBH[VD: ClassTag, ED: ClassTag](input: Graph[VD, ED],
-    threshold: Int,
+object Edge2DPartitioner {
+  def partitionByEdge2D[VD: ClassTag, ED: ClassTag](input: Graph[VD, ED],
     storageLevel: StorageLevel): Graph[VD, ED] = {
     val edges = input.edges
     val conf = edges.context.getConf
     val numPartitions = conf.getInt(cs_numPartitions, edges.partitions.length)
-    val dbh = new DBHPartitioner(numPartitions, threshold)
-    val degGraph = GraphImpl(input.degrees, edges)
-    val newEdges = degGraph.triplets.mapPartitions(_.map(et =>
-      (dbh.getKey(et), Edge(et.srcId, et.dstId, et.attr))
-    )).partitionBy(dbh).map(_._2)
+    val e2d = new Edge2DPartitioner(numPartitions)
+    val newEdges = input.triplets.mapPartitions(_.map(et =>
+      (e2d.getKey(et), Edge(et.srcId, et.dstId, et.attr))
+    )).partitionBy(e2d).map(_._2)
     GraphImpl(input.vertices, newEdges, null.asInstanceOf[VD], storageLevel, storageLevel)
   }
 }
