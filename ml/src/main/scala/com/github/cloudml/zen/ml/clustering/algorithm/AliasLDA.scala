@@ -73,7 +73,7 @@ class AliasLDA(numTopics: Int, numThreads: Int)
         if (gen == null) {
           gen = new XORShiftRandom(((seed + sampIter) * numPartitions + pid) * numThreads + thid)
           gens(thid) = gen
-          docDists(thid) = new AliasTable[Double].addAuxDist(new FlatDist(isSparse = true)).reset(numTopics)
+          docDists(thid) = new AliasTable[Double].addAuxDist(new FlatDist(isSparse=true)).reset(numTopics)
           MHSamps(thid) = new MetropolisHastings
           compSamps(thid) = new CompositeSampler
         }

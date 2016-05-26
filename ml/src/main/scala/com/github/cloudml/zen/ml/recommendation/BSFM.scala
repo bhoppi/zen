@@ -558,7 +558,7 @@ object BSFM {
     vertices.count()
 
     val dataSet = GraphImpl(vertices, edges, null.asInstanceOf[VD], storageLevel, storageLevel)
-    val newDataSet = DBHPartitioner.partitionByDBH(dataSet, storageLevel)
+    val newDataSet = DBHPartitioner.partitionByDBH(dataSet, 0, storageLevel)
     edges.unpersist()
     vertices.unpersist()
     newDataSet

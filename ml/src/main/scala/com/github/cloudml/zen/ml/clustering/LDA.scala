@@ -233,8 +233,9 @@ object LDA {
     val numDocs = verts.map(_._1).filter(isDocId).count()
     println(s"docs in the corpus: $numDocs")
     val lda = new LDA(edges, verts, numTopics, numTerms, numDocs, numTokens, alpha, beta, alphaAS,
-      algo, storageLevel) { init() }
-    initCorpus.unpersist(blocking=false)
+      algo, storageLevel)
+    lda.init()
+    initCorpus.unpersist()
     lda
   }
 
@@ -258,8 +259,9 @@ object LDA {
     val numDocs = verts.map(_._1).filter(isDocId).count()
     println(s"docs in the corpus: $numDocs")
     val lda = new LDA(edges, verts, numTopics, numTerms, numDocs, numTokens, alpha, beta, alphaAS,
-      algo, storageLevel) { init(Some(computedModel.termTopicsRDD)) }
-    verts.unpersist(blocking=false)
+      algo, storageLevel)
+    lda.init(Some(computedModel.termTopicsRDD))
+    verts.unpersist()
     lda
   }
 
@@ -331,7 +333,7 @@ object LDA {
     val initCorpus = reinitCorpus(partCorpus, initStrategy, numTopics, storageLevel)
     val edges = initCorpus.edges
     edges.persist(storageLevel).count()
-    graph.unpersist(blocking=false)
+    graph.unpersist()
     edges
   }
 
@@ -405,21 +407,24 @@ object LDA {
       if (byDoc) {
         EdgeDstPartitioner.partitionByEDP[TC, TA](corpus, storageLevel)
       } else {
-        corpus.partitionBy(PartitionStrategy.EdgePartition1D)
+        EdgeSrcPartitioner.partitionByESP[TC, TA](corpus, storageLevel)
       }
     case "bydoc" =>
       println("partition corpus by docs.")
       if (byDoc) {
-        corpus.partitionBy(PartitionStrategy.EdgePartition1D)
+        EdgeSrcPartitioner.partitionByESP[TC, TA](corpus, storageLevel)
       } else {
         EdgeDstPartitioner.partitionByEDP[TC, TA](corpus, storageLevel)
       }
     case "edge2d" =>
       println("using Edge2D partition strategy.")
-      corpus.partitionBy(PartitionStrategy.EdgePartition2D)
+      Edge2DPartitioner.partitionByEdge2D[TC, TA](corpus, storageLevel)
     case "dbh" =>
       println("using Degree-based Hashing partition strategy.")
-      DBHPartitioner.partitionByDBH[TC, TA](corpus, storageLevel)
+      DBHPartitioner.partitionByDBH[TC, TA](corpus, 0, storageLevel)
+    case "dbh+" =>
+      println("using Degree-based Hashing Plus partition strategy.")
+      DBHPartitioner.partitionByDBH[TC, TA](corpus, 20, storageLevel)
     case "vsdlp" =>
       println("using Vertex-cut Stochastic Dynamic Label Propagation partition strategy.")
       VSDLPPartitioner.partitionByVSDLP[TC, TA](corpus, 4, storageLevel)

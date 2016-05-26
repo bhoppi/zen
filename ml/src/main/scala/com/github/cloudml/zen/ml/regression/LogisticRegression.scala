@@ -535,7 +535,7 @@ object LogisticRegression {
     }.persist(storageLevel)
 
     val dataSet = GraphImpl(vertices, edges, 0D, storageLevel, storageLevel)
-    val newDataSet = DBHPartitioner.partitionByDBH(dataSet, storageLevel)
+    val newDataSet = DBHPartitioner.partitionByDBH(dataSet, 0, storageLevel)
     newDataSet.persist(storageLevel)
     newDataSet.vertices.count()
     newDataSet.edges.count()

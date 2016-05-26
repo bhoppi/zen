@@ -17,18 +17,16 @@
 
 package com.github.cloudml.zen.ml.partitioner
 
-import scala.reflect.ClassTag
-
 import com.github.cloudml.zen.ml.clustering.LDADefines._
-
 import org.apache.spark.HashPartitioner
 import org.apache.spark.graphx2._
 import org.apache.spark.graphx2.impl.GraphImpl
 import org.apache.spark.storage.StorageLevel
 
+import scala.reflect.ClassTag
+
 
 class EdgeDstPartitioner(val partitions: Int) extends HashPartitioner(partitions) {
-
   @inline def getKey(et: EdgeTriplet[_, _]): Long = et.dstId
 
   override def equals(other: Any): Boolean = other match {

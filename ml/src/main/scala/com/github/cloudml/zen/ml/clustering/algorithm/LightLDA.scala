@@ -88,6 +88,7 @@ class LightLDA(numTopics: Int, numThreads: Int)
         val termTopics = vattrs(si)
         useds(si) = termTopics.activeSize
         resetDist_wSparse(termDist, topicCounters, termTopics, betaSum)
+        val denseTermTopics = toBDV(termTopics)
         var pos = startPos
         while (pos < endPos) {
           val di = lcDstIds(pos)
@@ -98,13 +99,13 @@ class LightLDA(numTopics: Int, numThreads: Int)
             resetDist_bDense(betaDist, topicCounters, beta, betaSum)
           }
           if (gen.nextDouble() < 1e-4) {
-            resetDist_wSparse(termDist, topicCounters, termTopics, betaSum)
+            resetDist_wSparse(termDist, topicCounters, denseTermTopics, betaSum)
           }
           val docDist = dSparseCached(docCache, di, gen.nextDouble() < 1e-2).getOrElse {
             resetCache_dSparse(docCache, di, docTopics)
           }
           var topic = data(pos)
-          val CGSCurry2 = CGSCurry(termTopics, docTopics)
+          val CGSCurry2 = CGSCurry(denseTermTopics, docTopics)
           var docCycle = gen.nextBoolean()
           var mh = 0
           while (mh < 2) {
@@ -120,8 +121,8 @@ class LightLDA(numTopics: Int, numThreads: Int)
               data(pos) = newTopic
               topicCounters(topic) -= 1
               topicCounters(newTopic) += 1
-              termTopics(topic) -= 1
-              termTopics(newTopic) += 1
+              denseTermTopics(topic) -= 1
+              denseTermTopics(newTopic) += 1
               docTopics.synchronized {
                 docTopics(topic) -= 1
                 docTopics(newTopic) += 1
@@ -147,13 +148,13 @@ class LightLDA(numTopics: Int, numThreads: Int)
     beta: Double,
     betaSum: Double,
     alphaRatio: Double)
-    (termTopics: Nwk, docTopics: Ndk)
+    (denseTermTopics: BDV[Count], docTopics: Ndk)
     (curTopic: Int)(i: Int): Double = {
     val adjust = if (i == curTopic) -1 else 0
     val nk = topicCounters(i)
     val ndk = docTopics.synchronized(docTopics(i))
     val alphak = (nk + alphaAS) * alphaRatio
-    (ndk + adjust + alphak) * (termTopics(i) + adjust + beta) / (nk + adjust + betaSum)
+    (ndk + adjust + alphak) * (denseTermTopics(i) + adjust + beta) / (nk + adjust + betaSum)
   }
 
   def resetDist_bDense(b: AliasTable[Double],
