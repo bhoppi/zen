@@ -27,6 +27,8 @@ import org.apache.spark.SparkConf
 import org.apache.spark.graphx2._
 import org.apache.spark.rdd.RDD
 
+import scala.collection.mutable
+
 
 object LDADefines {
   type DocId = VertexId
@@ -40,6 +42,7 @@ object LDADefines {
   type Nvk = BV[Count]
   type NwkPair = (VertexId, Nwk)
   type NvkPair = (VertexId, Nvk)
+  type LDAGlobalCounters = BDV[Count]
 
   val sv_formatVersionV2_0 = "2.0"
   val sv_classNameV2_0 = "com.github.cloudml.zen.ml.clustering.DistributedLDAModel"
@@ -111,7 +114,9 @@ object LDADefines {
       classOf[AliasTable[Object]], classOf[FTree[Object]],  // for some partitioners
       classOf[BSV[Object]], classOf[BDV[Object]],
       classOf[SparseArray[Object]],  // member of BSV
-      classOf[Array[Int]]
+      classOf[Array[Int]],
+      classOf[LDAMetrics], classOf[LDALogLikelihood], classOf[LDACoherence],
+      classOf[mutable.ArrayBuffer[Object]], classOf[Set[Object]]  // for LDACoherence calc
     ))
   }
 

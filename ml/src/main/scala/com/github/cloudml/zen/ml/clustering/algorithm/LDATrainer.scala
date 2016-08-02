@@ -19,18 +19,32 @@ package com.github.cloudml.zen.ml.clustering.algorithm
 
 import java.util.concurrent.atomic.AtomicIntegerArray
 
-import breeze.linalg.{DenseVector => BDV, SparseVector => BSV, convert, sum}
-import breeze.numerics._
+import breeze.linalg.{sum, DenseVector => BDV, SparseVector => BSV}
 import com.github.cloudml.zen.ml.clustering.LDADefines._
+import com.github.cloudml.zen.ml.util.BVCompressor
 import com.github.cloudml.zen.ml.util.Concurrent._
-import com.github.cloudml.zen.ml.util.{BVCompressor, BVDecompressor}
-import org.apache.spark.graphx2.impl.{ShippableVertexPartition => VertPartition}
+import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.graphx2.impl.{EdgePartition, ShippableVertexPartition => VertPartition}
 
+import scala.collection.mutable
 import scala.concurrent.Future
 
 
 abstract class LDATrainer(numTopics: Int, numThreads: Int)
   extends LDAAlgorithm(numTopics, numThreads) {
+  def isByDoc: Boolean
+
+  def perplexPartition(globalCountersBc: Broadcast[LDAGlobalCounters],
+    numTokens: Long,
+    numTerms: Int,
+    alpha: Double,
+    alphaAS: Double,
+    beta: Double)
+    (ep: EdgePartition[TA, Nvk]): (Double, Double, Double)
+
+  def docOfWordsPartition(candWordsBc: Broadcast[Set[Int]])
+    (ep: EdgePartition[TA, _]): Iterator[(Int, mutable.ArrayBuffer[Long])]
+
   def aggregateCounters(vp: VertPartition[TC], cntsIter: Iterator[NvkPair]): VertPartition[TC] = {
     val totalSize = vp.capacity
     val index = vp.index
@@ -88,106 +102,9 @@ abstract class LDATrainer(numTopics: Int, numThreads: Int)
     vp.withValues(values)
   }
 
-  override def logLikelihoodPartition(topicCounters: BDV[Count],
-    numTokens: Long,
-    alpha: Double,
-    beta: Double,
-    alphaAS: Double)
-    (vp: VertPartition[TC]): (Double, Double) = {
-    val alphaSum = alpha * numTopics
-    val alphaRatio = calc_alphaRatio(alphaSum, numTokens, alphaAS)
-    val alphaks = calc_alphaks(topicCounters, alphaAS, alphaRatio)
-    val lgamma_alphaks = alphaks.map(lgamma(_))
-    val lgamma_beta = lgamma(beta)
-
-    val totalSize = vp.capacity
-    val index = vp.index
-    val mask = vp.mask
-    val values = vp.values
-    @volatile var wllhs = 0.0
-    @volatile var dllhs = 0.0
-    val sizePerthrd = {
-      val npt = totalSize / numThreads
-      if (npt * numThreads == totalSize) npt else npt + 1
-    }
-
-    implicit val es = initExecutionContext(numThreads)
-    val all = Future.traverse(Range(0, numThreads).iterator) { thid => withFuture {
-      val decomp = new BVDecompressor(numTopics)
-      val startPos = sizePerthrd * thid
-      val endPos = math.min(sizePerthrd * (thid + 1), totalSize)
-      var wllh_th = 0.0
-      var dllh_th = 0.0
-      var pos = mask.nextSetBit(startPos)
-      while (pos < endPos && pos >= 0) {
-        val bv = decomp.CV2BV(values(pos))
-        if (isTermId(index.getValue(pos))) {
-          bv.activeValuesIterator.foreach(cnt =>
-            wllh_th += lgamma(cnt + beta)
-          )
-          wllh_th -= bv.activeSize * lgamma_beta
-        } else {
-          val docTopics = bv.asInstanceOf[Ndk]
-          val used = docTopics.used
-          val index = docTopics.index
-          val data = docTopics.data
-          var nd = 0
-          var i = 0
-          while (i < used) {
-            val topic = index(i)
-            val cnt = data(i)
-            dllh_th += lgamma(cnt + alphaks(topic)) - lgamma_alphaks(topic)
-            nd += cnt
-            i += 1
-          }
-          dllh_th -= lgamma(nd + alphaSum)
-        }
-        pos = mask.nextSetBit(pos + 1)
-      }
-      wllhs += wllh_th
-      dllhs += dllh_th
-    }}
-    withAwaitReadyAndClose(all)
-
-    (wllhs, dllhs)
-  }
-
   def sum_abDense(alphak_denoms: BDV[Double],
     beta: Double): Double = {
     sum(alphak_denoms.copy :*= beta)
-  }
-
-  @inline def calc_alphaRatio(alphaSum: Double, numTokens: Long, alphaAS: Double): Double = {
-    alphaSum / (numTokens + alphaAS * numTopics)
-  }
-
-  def calc_denoms(topicCounters: BDV[Count],
-    betaSum: Double): BDV[Double] = {
-    val arr = new Array[Double](numTopics)
-    var i = 0
-    while (i < numTopics) {
-      arr(i) = 1.0 / (topicCounters(i) + betaSum)
-      i += 1
-    }
-    new BDV(arr)
-  }
-
-  def calc_alphak_denoms(denoms: BDV[Double],
-    alphaAS: Double,
-    betaSum: Double,
-    alphaRatio: Double): BDV[Double] = {
-    (denoms.copy :*= ((alphaAS - betaSum) * alphaRatio)) :+= alphaRatio
-  }
-
-  def calc_beta_denoms(denoms: BDV[Double],
-    beta: Double): BDV[Double] = {
-    denoms.copy :*= beta
-  }
-
-  def calc_alphaks(topicCounters: BDV[Count],
-    alphaAS: Double,
-    alphaRatio: Double): BDV[Double] = {
-    (convert(topicCounters, Double) :+= alphaAS) :*= alphaRatio
   }
 }
 

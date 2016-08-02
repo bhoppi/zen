@@ -23,6 +23,7 @@ import java.util.Random
 
 import breeze.linalg.{DenseVector => BDV, SparseVector => BSV, Vector => BV, sum}
 import com.github.cloudml.zen.ml.clustering.LDADefines._
+import com.github.cloudml.zen.ml.clustering.LDAPrecalc._
 import com.github.cloudml.zen.ml.clustering.algorithm.ZenLDA
 import com.github.cloudml.zen.ml.sampler._
 import com.github.cloudml.zen.ml.util._
@@ -55,10 +56,10 @@ class LocalLDAModel(@transient val termTopicsArr: Array[Nwk],
 
   @transient val alphaSum = alpha * numTopics
   @transient val betaSum = beta * numTerms
-  @transient val alphaRatio = algo.calc_alphaRatio(alphaSum, numTokens, alphaAS)
-  @transient val denoms = algo.calc_denoms(topicCounters, betaSum)
-  @transient val alphak_denoms = algo.calc_alphak_denoms(denoms, alphaAS, betaSum, alphaRatio)
-  @transient val beta_denoms = algo.calc_beta_denoms(denoms, beta)
+  @transient val alphaRatio = calc_alphaRatio(numTopics, numTokens, alphaAS, alphaSum)
+  @transient val denoms = calc_denoms(topicCounters, numTopics, betaSum)
+  @transient val alphak_denoms = calc_alphak_denoms(denoms, alphaAS, betaSum, alphaRatio)
+  @transient val beta_denoms = calc_beta_denoms(denoms, beta)
 
   @transient lazy val termDistCache = new AppendOnlyMap[Int,
     SoftReference[AliasTable[Double]]](numTerms / 2)

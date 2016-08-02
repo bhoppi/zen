@@ -22,9 +22,11 @@ import java.util.concurrent.ConcurrentLinkedQueue
 
 import breeze.linalg.{DenseVector => BDV, SparseVector => BSV}
 import com.github.cloudml.zen.ml.clustering.LDADefines._
+import com.github.cloudml.zen.ml.clustering.LDAPrecalc._
 import com.github.cloudml.zen.ml.sampler._
 import com.github.cloudml.zen.ml.util.Concurrent._
 import com.github.cloudml.zen.ml.util.XORShiftRandom
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.graphx2.impl.EdgePartition
 
 import scala.collection.JavaConversions._
@@ -36,16 +38,17 @@ class AliasLDA(numTopics: Int, numThreads: Int)
   override def samplePartition(numPartitions: Int,
     sampIter: Int,
     seed: Int,
-    topicCounters: BDV[Count],
+    globalCountersBc: Broadcast[LDAGlobalCounters],
     numTokens: Long,
     numTerms: Int,
     alpha: Double,
     alphaAS: Double,
     beta: Double)
     (pid: Int, ep: EdgePartition[TA, Nvk]): EdgePartition[TA, Int] = {
+    val topicCounters = globalCountersBc.value
     val alphaSum = alpha * numTopics
     val betaSum = beta * numTerms
-    val alphaRatio = calc_alphaRatio(alphaSum, numTokens, alphaAS)
+    val alphaRatio = calc_alphaRatio(numTopics, numTokens, alphaAS, alphaSum)
 
     val totalSize = ep.size
     val lcSrcIds = ep.localSrcIds

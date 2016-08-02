@@ -17,11 +17,17 @@
 
 package com.github.cloudml.zen.ml.clustering.algorithm
 
-import breeze.linalg.{DenseVector => BDV, SparseVector => BSV, sum}
+import java.util.concurrent.ConcurrentLinkedQueue
+
+import breeze.linalg.{sum, DenseVector => BDV, SparseVector => BSV}
 import com.github.cloudml.zen.ml.clustering.LDADefines._
+import com.github.cloudml.zen.ml.clustering.LDAPrecalc._
 import com.github.cloudml.zen.ml.util.Concurrent._
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.graphx2.impl.EdgePartition
 
+import scala.collection.JavaConversions._
+import scala.collection.mutable
 import scala.concurrent.Future
 
 
@@ -94,18 +100,19 @@ abstract class LDATrainerByDoc(numTopics: Int, numThreads: Int)
     results.iterator
   }
 
-  override def perplexPartition(topicCounters: BDV[Count],
+  override def perplexPartition(globalCountersBc: Broadcast[LDAGlobalCounters],
     numTokens: Long,
     numTerms: Int,
     alpha: Double,
     alphaAS: Double,
     beta: Double)
     (ep: EdgePartition[TA, Nvk]): (Double, Double, Double) = {
+    val topicCounters = globalCountersBc.value
     val alphaSum = alpha * numTopics
     val betaSum = beta * numTerms
-    val alphaRatio = calc_alphaRatio(alphaSum, numTokens, alphaAS)
+    val alphaRatio = calc_alphaRatio(numTopics, numTokens, alphaAS, alphaSum)
     val alphaks = calc_alphaks(topicCounters, alphaAS, alphaRatio)
-    val denoms = calc_denoms(topicCounters, betaSum)
+    val denoms = calc_denoms(topicCounters, numTopics, betaSum)
     val alphak_denoms = calc_alphak_denoms(denoms, alphaAS, betaSum, alphaRatio)
 
     val totalSize = ep.size
@@ -194,5 +201,30 @@ abstract class LDATrainerByDoc(numTopics: Int, numThreads: Int)
       i += 1
     }
     new BSV(index, arr, used, numTopics)
+  }
+
+  override def docOfWordsPartition(candWordsBc: Broadcast[Set[Int]])
+    (ep: EdgePartition[TA, _]): Iterator[(Int, mutable.ArrayBuffer[Long])] = {
+    val candWords = candWordsBc.value
+    val lcSrcIds = ep.localSrcIds
+    val lcDstIds = ep.localDstIds
+    val l2g = ep.local2global
+    val dwp = new ConcurrentLinkedQueue[(Int, mutable.ArrayBuffer[Long])]
+
+    implicit val es = initExecutionContext(numThreads)
+    val all = Future.traverse(lcSrcIds.indices.by(3).iterator) { lsi => withFuture {
+      val si = lcSrcIds(lsi)
+      val wid = l2g(si).toInt
+      if (candWords.contains(wid)) {
+        val startPos = lcSrcIds(lsi + 1)
+        val endPos = lcSrcIds(lsi + 2)
+        val docs = new mutable.ArrayBuffer[Long]
+        lcDstIds.toSeq.slice(startPos, endPos).distinct.map(l2g(_)).copyToBuffer(docs)
+        dwp.add((wid, docs))
+      }
+    }}
+    withAwaitReadyAndClose(all)
+
+    dwp.toSeq.iterator
   }
 }

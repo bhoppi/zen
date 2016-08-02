@@ -163,7 +163,7 @@ object LDADriver {
       "           -partStrategy=<Direct|ByTerm|ByDoc|Edge2D|*DBH|DBH+|VSDLP|BBR>\n" +
       "           -initStrategy=<*Random|SparseTerm|SparseDoc>\n" +
       "           -chkptInterval=<Int(*10)> (0 or negative disables checkpoint)\n" +
-      "           -evalMetric=<*None|PPLX|LLH>\n" +
+      "           -evalMetric=<*None|{PPLX|LLH|COH}+>\n" +
       "           -saveInterval=<Int(*0)> (0 or negative disables save at intervals)\n" +
       "           -saveTransposed=<*true|false>\n" +
       "           -saveAsSolid=<true|*false>\n" +

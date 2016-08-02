@@ -23,6 +23,7 @@ import com.github.cloudml.zen.ml.clustering.algorithm.LDATrainer
 import com.github.cloudml.zen.ml.partitioner._
 import com.github.cloudml.zen.ml.util._
 import org.apache.hadoop.fs.Path
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.graphx2._
 import org.apache.spark.graphx2.impl._
 import org.apache.spark.mllib.linalg.distributed.{MatrixEntry, RowMatrix}
@@ -43,7 +44,7 @@ class LDA(@transient var edges: EdgeRDDImpl[TA, _],
   val algo: LDATrainer,
   var storageLevel: StorageLevel) extends Serializable {
 
-  @transient var topicCounters: BDV[Count] = _
+  @transient var globalCountersBc: Broadcast[LDAGlobalCounters] = _
   @transient lazy val seed = (new XORShiftRandom).nextInt()
   @transient var edgeCpFile: String = _
   @transient var vertCpFile: String = _
@@ -77,9 +78,9 @@ class LDA(@transient var edges: EdgeRDDImpl[TA, _],
   @inline private def scConf = scContext.getConf
 
   def init(computedModel: Option[RDD[NwkPair]] = None): Unit = {
-    val initPartRDD = edges.partitionsRDD.mapPartitions(_.map(Function.tupled((pid, ep) => {
+    val initPartRDD = edges.partitionsRDD.mapPartitions(_.map { case (pid, ep) =>
       (pid, algo.initEdgePartition(ep))
-    })), preservesPartitioning=true)
+    }, preservesPartitioning=true)
     val newEdges = edges.withPartitionsRDD(initPartRDD)
     newEdges.persist(storageLevel).setName("edges-0")
     edges = newEdges
@@ -92,16 +93,17 @@ class LDA(@transient var edges: EdgeRDDImpl[TA, _],
       case None => verts
     }
     verts.persist(storageLevel).setName("vertices-0")
-    topicCounters = algo.collectTopicCounters(verts)
+    val globalCounters = algo.collectGlobalCounters(verts)
+    globalCountersBc = scContext.broadcast(globalCounters)
   }
 
   def runGibbsSampling(totalIter: Int): Unit = {
-    val evalMetric = scConf.get(cs_evalMetric, "none")
-    val toEval = !evalMetric.equals("none")
+    val evalMetrics = scConf.get(cs_evalMetric, "none").split(raw"\+")
+    val toEval = !evalMetrics.contains("none")
     val saveIntv = scConf.getInt(cs_saveInterval, 0)
     if (toEval) {
       println("Before Gibbs sampling:")
-      LDAMetrics(evalMetric, this).output(println)
+      LDAMetrics(this, evalMetrics, lastIter=false).foreach(_.output(println))
     }
     var iter = 1
     while (iter <= totalIter) {
@@ -109,7 +111,7 @@ class LDA(@transient var edges: EdgeRDDImpl[TA, _],
       val startedAt = System.nanoTime
       gibbsSampling(iter)
       if (toEval) {
-        LDAMetrics(evalMetric, this).output(println)
+        LDAMetrics(this, evalMetrics, iter == totalIter).foreach(_.output(println))
       }
       if (saveIntv > 0 && iter % saveIntv == 0 && iter < totalIter) {
         val model = toLDAModel
@@ -130,7 +132,7 @@ class LDA(@transient var edges: EdgeRDDImpl[TA, _],
     val needChkpt = chkptIntv > 0 && sampIter % chkptIntv == 1 && scContext.getCheckpointDir.isDefined
     val startedAt = System.nanoTime
 
-    val newEdges = algo.sampleGraph(edges, verts, topicCounters, seed, sampIter,
+    val newEdges = algo.sampleGraph(edges, verts, globalCountersBc, seed, sampIter,
       numTokens, numTerms, alpha, alphaAS, beta)
     newEdges.persist(storageLevel).setName(s"edges-$sampIter")
     if (needChkpt) {
@@ -143,13 +145,16 @@ class LDA(@transient var edges: EdgeRDDImpl[TA, _],
     if (needChkpt) {
       newVerts.checkpoint()
     }
-    topicCounters = algo.collectTopicCounters(newVerts)
-    val count = topicCounters.data.par.map(_.toLong).sum
+    val newGlobalCounters = algo.collectGlobalCounters(newVerts)
+    val count = newGlobalCounters.data.par.sum
     assert(count == numTokens, s"numTokens=$numTokens, count=$count")
+
     edges.unpersist(blocking=false)
     verts.unpersist(blocking=false)
+    globalCountersBc.unpersist(blocking=false)
     edges = newEdges
     verts = newVerts
+    globalCountersBc = scContext.broadcast(newGlobalCounters)
 
     if (needChkpt) {
       if (edgeCpFile != null && vertCpFile != null) {
@@ -350,7 +355,7 @@ object LDA {
           pidMark += 1
           pidMark
         } else {
-          tokens.head.toLong
+          tokens.head.split(":")(0).toLong
         }
         tokens.tail.flatMap { field =>
           val pairs = field.split(":")
