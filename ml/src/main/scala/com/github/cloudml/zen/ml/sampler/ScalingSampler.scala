@@ -22,28 +22,24 @@ import java.util.Random
 import spire.math.{Numeric => spNum}
 
 
-trait Sampler[@specialized(Double, Int, Float, Long) T] {
-  protected def numer: spNum[T]
-  def apply(state: Int): T
-  def norm: T
-  def sampleFrom(base: T, gen: Random): Int
-  def resampleFrom(base: T, gen: Random, state: Int): Int
+class ScalingSampler(implicit ev: spNum[Double])
+  extends Sampler[Double] {
+  private var scale: Double = _
+  private var sampler: Sampler[_] = _
 
-  def sampleRandom(gen: Random): Int = {
-    val u = gen.nextDouble() * normDouble
-    sampleFromDouble(u, gen)
+  protected def numer: spNum[Double] = ev
+
+  def apply(state: Int): Double = sampler.applyDouble(state) * scale
+
+  def norm: Double = sampler.normDouble * scale
+
+  def sampleFrom(base: Double, gen: Random): Int = sampler.sampleFromDouble(base / scale, gen)
+
+  def resampleFrom(base: Double, gen: Random, state: Int): Int = sampler.resampleFromDouble(base / scale, gen, state)
+
+  def resetScaling(scale: Double, sampler: Sampler[_]): ScalingSampler = {
+    this.scale = scale
+    this.sampler = sampler
+    this
   }
-
-  def resampleRandom(gen: Random, state: Int): Int = {
-    val u = gen.nextDouble() * normDouble
-    resampleFromDouble(u, gen, state)
-  }
-
-  def applyDouble(state: Int): Double = numer.toDouble(apply(state))
-
-  def normDouble: Double = numer.toDouble(norm)
-
-  def sampleFromDouble(base: Double, gen: Random): Int = sampleFrom(numer.fromDouble(base), gen)
-
-  def resampleFromDouble(base: Double, gen: Random, state: Int): Int = resampleFrom(numer.fromDouble(base), gen, state)
 }

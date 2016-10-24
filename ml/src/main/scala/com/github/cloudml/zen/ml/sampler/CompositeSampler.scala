@@ -45,6 +45,19 @@ class CompositeSampler(implicit ev: spNum[Double])
     curSampler.sampleFromDouble(remain, gen)
   }
 
+  def resampleFrom(base: Double, gen: Random, state: Int): Int = {
+    val sampIter = samplers.iterator
+    var curSampler = sampIter.next()
+    var subNorm = curSampler.normDouble
+    var remain = base
+    while (remain >= subNorm) {
+      remain -= subNorm
+      curSampler = sampIter.next()
+      subNorm = curSampler.normDouble
+    }
+    curSampler.resampleFromDouble(remain, gen, state)
+  }
+
   def resetComponents(samplers: Sampler[_]*): CompositeSampler = {
     this.samplers = samplers
     this

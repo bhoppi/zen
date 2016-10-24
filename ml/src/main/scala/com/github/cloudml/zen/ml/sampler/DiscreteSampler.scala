@@ -18,12 +18,13 @@
 package com.github.cloudml.zen.ml.sampler
 
 import java.util.Random
-import scala.annotation.tailrec
 
-import spire.math.{Numeric => spNum}
+import scala.annotation.tailrec
 
 
 trait DiscreteSampler[@specialized(Double, Int, Float, Long) T] extends Sampler[T] {
+  private var residualRate: (Int) => Double = _
+
   def length: Int
   def used: Int
   def update(state: Int, value: => T): Unit
@@ -32,15 +33,22 @@ trait DiscreteSampler[@specialized(Double, Int, Float, Long) T] extends Sampler[
   def resetDist(distIter: Iterator[(Int, T)], psize: Int): DiscreteSampler[T]
   def reset(newSize: Int): DiscreteSampler[T]
 
-  @tailrec final def resampleRandom(gen: Random,
-    state: Int,
-    residualRate: => Double,
-    numResampling: Int = 2)(implicit ev: spNum[T]): Int = {
-    val newState = sampleRandom(gen)
-    if (newState == state && numResampling >= 0 && used > 1) {
-      val r = residualRate
-      if (residualRate >= 1.0 || gen.nextDouble() < residualRate) {
-        resampleRandom(gen, state, r, numResampling - 1)
+  @inline def setResidualRate(rrf: (Int) => Double): Unit = {
+    residualRate = rrf
+  }
+
+  @inline def unsetResidualRate(): Unit = {
+    residualRate = null
+  }
+
+  def resampleFrom(base: T,
+    gen: Random,
+    state: Int): Int = {
+    val newState = sampleFrom(base, gen)
+    if (residualRate != null && newState == state && used > 1) {
+      val r = residualRate(state)
+      if (r >= 1.0 || gen.nextDouble() < r) {
+        doResampling(gen, state, r)
       } else {
         newState
       }
@@ -49,22 +57,19 @@ trait DiscreteSampler[@specialized(Double, Int, Float, Long) T] extends Sampler[
     }
   }
 
-  @tailrec final def resampleFrom(base: T,
-    gen: Random,
+  @tailrec private final def doResampling(gen: Random,
     state: Int,
-    residualRate: => Double,
-    numResampling: Int = 2)(implicit ev: spNum[T]): Int = {
-    val newState = sampleFrom(base, gen)
-    if (newState == state && numResampling >= 0 && used > 1) {
-      val r = residualRate
-      if (r >= 1.0 || gen.nextDouble() < r) {
-        val newBase = ev.fromDouble(gen.nextDouble() * ev.toDouble(norm))
-        resampleFrom(newBase, gen, state, r, numResampling - 1)
+    rate: Double,
+    numResampling: Int = 2): Int = {
+    if (numResampling > 0) {
+      val newState = sampleRandom(gen)
+      if (newState == state && gen.nextDouble() < rate) {
+        doResampling(gen, state, rate, numResampling - 1)
       } else {
         newState
       }
     } else {
-      newState
+      state
     }
   }
 }

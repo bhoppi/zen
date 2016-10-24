@@ -47,6 +47,8 @@ class MetropolisHastings(implicit ev: spNum[Double])
     state
   }
 
+  def resampleFrom(base: Double, gen: Random, state: Int): Int = sampleFrom(base, gen)
+
   private def acceptRate(newState:Int): Double = {
     origFunc(newState) * proposal(state) /
       (origFunc(state) * proposal(newState))

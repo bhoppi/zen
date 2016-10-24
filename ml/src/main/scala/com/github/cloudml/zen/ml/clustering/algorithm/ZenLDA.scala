@@ -118,63 +118,46 @@ class ZenLDA(numTopics: Int, numThreads: Int)
         }
         val termDist = termDists(thid)
         val cdfDist = cdfDists(thid)
+        val totalSamp = new CompositeSampler()
 
         val si = lcSrcIds(lsi)
         val startPos = lcSrcIds(lsi + 1)
         val endPos = lcSrcIds(lsi + 2)
         val termTopics = vattrs(si)
         useds(si) = termTopics.activeSize
-        resetDist_waSparse(termDist, alphak_denoms, termTopics)
         val denseTermTopics = toBDV(termTopics)
+        resetDist_waSparse(termDist, alphak_denoms, termTopics, denseTermTopics)
         val common = isCommon(gen, startPos, endPos, lcDstIds, vattrs)
-        var pos = startPos
-        if (common) {
+        val (resetDist_dwbSparse_f, resetDist_dwbSparse_wAdj_f) = if (common) {
           val termBeta_denoms = calc_termBeta_denoms(denoms, beta_denoms, termTopics)
-          while (pos < endPos) {
-            var ind = lcDstIds(pos)
-            if (ind >= 0) {
-              val di = ind
-              val docTopics = vattrs(di).asInstanceOf[Ndk]
-              useds(di) = docTopics.activeSize
-              val topic = data(pos)
-              resetDist_dwbSparse_wOptAdjust(cdfDist, denoms, termBeta_denoms, docTopics, topic)
-              data(pos) = tokenSampling(gen, global, termDist, cdfDist, denseTermTopics, topic)
-              pos += 1
-            } else {
-              val di = lcDstIds(pos + 1)
-              val docTopics = vattrs(di).asInstanceOf[Ndk]
-              useds(di) = docTopics.activeSize
-              resetDist_dwbSparse_wOpt(cdfDist, termBeta_denoms, docTopics)
-              while (ind < 0) {
-                val topic = data(pos)
-                data(pos) = tokenResampling(gen, global, termDist, cdfDist, denseTermTopics, docTopics, topic, beta)
-                pos += 1
-                ind += 1
-              }
-            }
-          }
+          (resetDist_dwbSparse_wOpt(termBeta_denoms, denseTermTopics, beta) _,
+            resetDist_dwbSparse_wOptAdj(denoms, termBeta_denoms) _)
         } else {
-          while (pos < endPos) {
-            var ind = lcDstIds(pos)
-            if (ind >= 0) {
-              val di = ind
-              val docTopics = vattrs(di).asInstanceOf[Ndk]
-              useds(di) = docTopics.activeSize
-              val topic = data(pos)
-              resetDist_dwbSparse_wAdjust(cdfDist, denoms, denseTermTopics, docTopics, topic, beta)
-              data(pos) = tokenSampling(gen, global, termDist, cdfDist, denseTermTopics, topic)
+          (resetDist_dwbSparse(denoms, denseTermTopics, beta) _,
+            resetDist_dwbSparse_wAdj(denoms, denseTermTopics, beta) _)
+        }
+        var pos = startPos
+        while (pos < endPos) {
+          var ind = lcDstIds(pos)
+          if (ind >= 0) {
+            val di = ind
+            val docTopics = vattrs(di).asInstanceOf[Ndk]
+            useds(di) = docTopics.activeSize
+            val topic = data(pos)
+            resetDist_dwbSparse_wAdj_f(cdfDist, docTopics, topic)
+            totalSamp.resetComponents(cdfDist, termDist, global)
+            data(pos) = totalSamp.resampleRandom(gen, topic)
+            pos += 1
+          } else {
+            val di = lcDstIds(pos + 1)
+            val docTopics = vattrs(di).asInstanceOf[Ndk]
+            useds(di) = docTopics.activeSize
+            resetDist_dwbSparse_f(cdfDist, docTopics)
+            totalSamp.resetComponents(cdfDist, termDist, global)
+            while (ind < 0) {
+              data(pos) = totalSamp.resampleRandom(gen, data(pos))
               pos += 1
-            } else {
-              val di = lcDstIds(pos + 1)
-              val docTopics = vattrs(di).asInstanceOf[Ndk]
-              useds(di) = docTopics.activeSize
-              resetDist_dwbSparse(cdfDist, denoms, denseTermTopics, docTopics, beta)
-              while (ind < 0) {
-                val topic = data(pos)
-                data(pos) = tokenResampling(gen, global, termDist, cdfDist, denseTermTopics, docTopics, topic, beta)
-                pos += 1
-                ind += 1
-              }
+              ind += 1
             }
           }
         }
@@ -197,50 +180,6 @@ class ZenLDA(numTopics: Int, numThreads: Int)
     val dlgInd = lcDstIds(dlgPos)
     val dlgDi = if (dlgInd >= 0) dlgInd else lcDstIds(dlgPos + 1)
     numSrcEdges * vattrs(dlgDi).activeSize >= dscp
-  }
-
-  def tokenSampling(gen: Random,
-    ab: AliasTable[Double],
-    wa: AliasTable[Double],
-    dwb: CumulativeDist[Double],
-    denseTermTopics: BDV[Count],
-    curTopic: Int): Int = {
-    val dwbSum = dwb.norm
-    val sum23 = dwbSum + wa.norm
-    val distSum = sum23 + ab.norm
-    val genSum = gen.nextDouble() * distSum
-    if (genSum < dwbSum) {
-      dwb.sampleFrom(genSum, gen)
-    } else if (genSum < sum23) {
-      wa.resampleFrom(genSum - dwbSum, gen, curTopic, 1.0 / denseTermTopics(curTopic))
-    } else {
-      ab.sampleFrom(genSum - sum23, gen)
-    }
-  }
-
-  def tokenResampling(gen: Random,
-    ab: AliasTable[Double],
-    wa: AliasTable[Double],
-    dwb: CumulativeDist[Double],
-    denseTermTopics: BDV[Count],
-    docTopics: Ndk,
-    curTopic: Int,
-    beta: Double): Int = {
-    val dwbSum = dwb.norm
-    val sum23 = dwbSum + wa.norm
-    val distSum = sum23 + ab.norm
-    val genSum = gen.nextDouble() * distSum
-    if (genSum < dwbSum) {
-      dwb.resampleFrom(genSum, gen, curTopic, {
-        val a = 1.0 / (denseTermTopics(curTopic) + beta)
-        val b = 1.0 / docTopics(curTopic)
-        a + b - a * b
-      })
-    } else if (genSum < sum23) {
-      wa.resampleFrom(genSum - dwbSum, gen, curTopic, 1.0 / denseTermTopics(curTopic))
-    } else {
-      ab.sampleFrom(genSum - sum23, gen)
-    }
   }
 
   override def countPartition(ep: EdgePartition[TA, Int]): Iterator[NvkPair] = {
@@ -338,7 +277,6 @@ class ZenLDA(numTopics: Int, numThreads: Int)
     val vertSize = vattrs.length
     val docNorms = new Array[Double](vertSize)
     val thq = new ConcurrentLinkedQueue(1 to numThreads)
-    val gens = Array.tabulate(numThreads)(thid => new XORShiftRandom(73 * numThreads + thid))
     @volatile var llhs = 0.0
     @volatile var wllhs = 0.0
     @volatile var dllhs = 0.0
@@ -351,7 +289,6 @@ class ZenLDA(numTopics: Int, numThreads: Int)
         val si = lcSrcIds(lsi)
         val startPos = lcSrcIds(lsi + 1)
         val endPos = lcSrcIds(lsi + 2)
-        val gen = gens(thid)
         val termTopics = vattrs(si)
         val waSparseSum = sum_waSparse(alphak_denoms, termTopics)
         val sum12 = abDenseSum + waSparseSum
@@ -416,40 +353,44 @@ class ZenLDA(numTopics: Int, numThreads: Int)
 
   def resetDist_waSparse(wa: AliasTable[Double],
     alphak_denoms: BDV[Double],
-    termTopics: Nwk): AliasTable[Double] = termTopics match {
-    case v: BDV[Count] =>
-      val probs = new Array[Double](numTopics)
-      val space = new Array[Int](numTopics)
-      var psize = 0
-      var i = 0
-      while (i < numTopics) {
-        val cnt = v(i)
-        if (cnt > 0) {
-          probs(psize) = alphak_denoms(i) * cnt
-          space(psize) = i
-          psize += 1
+    termTopics: Nwk,
+    denseTermTopics: BDV[Count]): AliasTable[Double] = {
+    termTopics match {
+      case v: BDV[Count] =>
+        val probs = new Array[Double](numTopics)
+        val space = new Array[Int](numTopics)
+        var psize = 0
+        var i = 0
+        while (i < numTopics) {
+          val cnt = v(i)
+          if (cnt > 0) {
+            probs(psize) = alphak_denoms(i) * cnt
+            space(psize) = i
+            psize += 1
+          }
+          i += 1
         }
-        i += 1
-      }
-      wa.resetDist(probs, space, psize)
-    case v: BSV[Count] =>
-      val used = v.used
-      val index = v.index
-      val data = v.data
-      val probs = new Array[Double](used)
-      var i = 0
-      while (i < used) {
-        probs(i) = alphak_denoms(index(i)) * data(i)
-        i += 1
-      }
-      wa.resetDist(probs, index, used)
+        wa.resetDist(probs, space, psize)
+      case v: BSV[Count] =>
+        val used = v.used
+        val index = v.index
+        val data = v.data
+        val probs = new Array[Double](used)
+        var i = 0
+        while (i < used) {
+          probs(i) = alphak_denoms(index(i)) * data(i)
+          i += 1
+        }
+        wa.resetDist(probs, index, used)
+    }
+    wa.setResidualRate(1.0 / denseTermTopics(_))
+    wa
   }
 
-  def resetDist_dwbSparse(dwb: CumulativeDist[Double],
-    denoms: BDV[Double],
+  def resetDist_dwbSparse(denoms: BDV[Double],
     denseTermTopics: BDV[Count],
-    docTopics: Ndk,
-    beta: Double): CumulativeDist[Double] = {
+    beta: Double)(dwb: CumulativeDist[Double],
+    docTopics: Ndk): CumulativeDist[Double] = {
     val used = docTopics.used
     val index = docTopics.index
     val data = docTopics.data
@@ -465,15 +406,19 @@ class ZenLDA(numTopics: Int, numThreads: Int)
       i += 1
     }
     dwb._space = index
+    dwb.setResidualRate { k =>
+      val a = 1.0 / (denseTermTopics(k) + beta)
+      val b = 1.0 / docTopics(k)
+      a + b - a * b
+    }
     dwb
   }
 
-  def resetDist_dwbSparse_wAdjust(dwb: CumulativeDist[Double],
-    denoms: BDV[Double],
+  def resetDist_dwbSparse_wAdj(denoms: BDV[Double],
     denseTermTopics: BDV[Count],
+    beta: Double)(dwb: CumulativeDist[Double],
     docTopics: Ndk,
-    curTopic: Int,
-    beta: Double): CumulativeDist[Double] = {
+    curTopic: Int): CumulativeDist[Double] = {
     val used = docTopics.used
     val index = docTopics.index
     val data = docTopics.data
@@ -496,11 +441,13 @@ class ZenLDA(numTopics: Int, numThreads: Int)
       i += 1
     }
     dwb._space = index
+    dwb.unsetResidualRate()
     dwb
   }
 
-  def resetDist_dwbSparse_wOpt(dwb: CumulativeDist[Double],
-    termBeta_denoms: BDV[Double],
+  def resetDist_dwbSparse_wOpt(termBeta_denoms: BDV[Double],
+    denseTermTopics: BDV[Count],
+    beta: Double)(dwb: CumulativeDist[Double],
     docTopics: Ndk): CumulativeDist[Double] = {
     val used = docTopics.used
     val index = docTopics.index
@@ -516,12 +463,16 @@ class ZenLDA(numTopics: Int, numThreads: Int)
       i += 1
     }
     dwb._space = index
+    dwb.setResidualRate { k =>
+      val a = 1.0 / (denseTermTopics(k) + beta)
+      val b = 1.0 / docTopics(k)
+      a + b - a * b
+    }
     dwb
   }
 
-  def resetDist_dwbSparse_wOptAdjust(dwb: CumulativeDist[Double],
-    denoms: BDV[Double],
-    termBeta_denoms: BDV[Double],
+  def resetDist_dwbSparse_wOptAdj(denoms: BDV[Double],
+    termBeta_denoms: BDV[Double])(dwb: CumulativeDist[Double],
     docTopics: Ndk,
     curTopic: Int): CumulativeDist[Double] = {
     val used = docTopics.used
@@ -546,6 +497,7 @@ class ZenLDA(numTopics: Int, numThreads: Int)
       i += 1
     }
     dwb._space = index
+    dwb.unsetResidualRate()
     dwb
   }
 
