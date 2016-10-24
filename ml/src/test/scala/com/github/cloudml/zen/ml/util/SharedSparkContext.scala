@@ -29,10 +29,14 @@ trait SharedSparkContext extends BeforeAndAfterAll {
 
   def sc: SparkContext = _sc
 
+  def initSparkConf(): SparkConf = {
+    new SparkConf().setAppName("zen-test")
+      .set("spark.cleaner.referenceTracking.blocking", "true")
+      .set("spark.cleaner.referenceTracking.blocking.shuffle", "true")
+  }
+
   override def beforeAll() {
-    val conf = new SparkConf().setAppName(s"zen-test")
-    conf.set("spark.cleaner.referenceTracking.blocking", "true")
-    conf.set("spark.cleaner.referenceTracking.blocking.shuffle", "true")
+    val conf = initSparkConf()
     _sc = new SparkContext("local[3]", "test", conf)
     super.beforeAll()
   }

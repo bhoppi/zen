@@ -29,7 +29,7 @@ import scala.collection.mutable
 import scala.concurrent.Future
 
 
-abstract class GLDAMetrics(lda: GLDA) extends Serializable {
+abstract class GLDAMetrics(glda: GLDA) extends Serializable {
   def getTotal: Double
   def calc(): GLDAMetrics
   def calculated: Boolean
@@ -212,12 +212,12 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
 }
 
 object GLDAMetrics {
-  def apply(lda: GLDA,
+  def apply(glda: GLDA,
     evalMetrics: Array[String]): Array[GLDAMetrics] = {
     evalMetrics.map { evalMetric =>
       val ldaMetric = evalMetric match {
         case "pplx" =>
-          new GLDAPerplexity(lda)
+          new GLDAPerplexity(glda)
       }
       ldaMetric.calc()
     }

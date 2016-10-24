@@ -26,6 +26,7 @@ import com.github.cloudml.zen.ml.sampler.AliasTable
 import com.github.cloudml.zen.ml.semiSupervised.GLDADefines._
 import com.github.cloudml.zen.ml.util.SharedSparkContext
 import com.google.common.io.Files
+import org.apache.spark.SparkConf
 import org.apache.spark.storage.StorageLevel
 import org.scalatest.FunSuite
 
@@ -33,11 +34,15 @@ import org.scalatest.FunSuite
 class GLDASuite extends FunSuite with SharedSparkContext {
   import GLDASuite._
 
+  override def initSparkConf(): SparkConf = {
+    val conf = super.initSparkConf()
+    setAppConfs(conf)
+  }
+
   test("GLDA || Gibbs sampling") {
     val model = genGLDAModel()
     val bowDocs = sampleBowDocs(model)
     val bowDocsRdd = sc.parallelize(bowDocs, 2)
-    setAppConfs(sc.getConf)
 
     val dataBlocks = GLDA.convertBowDocs(bowDocsRdd, numTopics, numThreads)
     val paraBlocks = GLDA.buildParaBlocks(dataBlocks)
