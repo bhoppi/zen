@@ -37,22 +37,30 @@ object GLDADefines {
   case class GlobalVars(piGK: DenseMatrix[Float], sigGW: DenseMatrix[Float], nK: DenseVector[Int],
     dG: DenseVector[Long])
 
+  type OptionMap = Map[String, String]
+
   val sv_formatVersion = "1.0"
   val sv_className = "com.github.cloudml.zen.ml.semiSupervised.DistributedGLDAModel"
-  val cs_numTopics = "zen.glda.numTopics"
-  val cs_numGroups = "zen.glda.numGroups"
-  val cs_numThreads = "zen.glda.numThreads"
   val cs_numPartitions = "zen.glda.numPartitions"
+  val cs_inputPath = "zen.glda.inputPath"
+  val cs_outputpath = "zen.glda.outputPath"
   val cs_burninIter = "zen.glda.burninIter"
   val cs_sampleRate = "zen.glda.sampleRate"
-  val cs_storageLevel = "zen.glda.storageLevel"
   val cs_chkptInterval = "zen.glda.chkptInterval"
   val cs_evalMetric = "zen.glda.evalMetric"
   val cs_saveInterval = "zen.glda.saveInterval"
-  val cs_inputPath = "zen.glda.inputPath"
-  val cs_outputpath = "zen.glda.outputPath"
   val cs_saveAsSolid = "zen.glda.saveAsSolid"
   val cs_labelsRate = "zen.glda.labelsRate"
+
+  def setAppConfs(conf: SparkConf, options: OptionMap = Map()): Unit ={
+    conf.set(cs_burninIter, options.getOrElse("burniniter", "10"))
+    conf.set(cs_sampleRate, options.getOrElse("samplerate", "1.0"))
+    conf.set(cs_chkptInterval, options.getOrElse("chkptinterval", "10"))
+    conf.set(cs_evalMetric, options.getOrElse("evalmetric", "none"))
+    conf.set(cs_saveInterval, options.getOrElse("saveinterval", "0"))
+    conf.set(cs_saveAsSolid, options.getOrElse("saveassolid", "true"))
+    conf.set(cs_labelsRate, options.getOrElse("labelsrate", "1.0"))
+  }
 
   def registerKryoClasses(conf: SparkConf): Unit = {
     conf.registerKryoClasses(Array(

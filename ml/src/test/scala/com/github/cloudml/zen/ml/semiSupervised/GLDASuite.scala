@@ -35,13 +35,15 @@ class GLDASuite extends FunSuite with SharedSparkContext {
 
   test("GLDA || Gibbs sampling") {
     val model = genGLDAModel()
-    val corpus = sampleCorpus(model)
-    val data = sc.parallelize(corpus, 2)
+    val bowDocs = sampleBowDocs(model)
+    val bowDocsRdd = sc.parallelize(bowDocs, 2)
+    setAppConfs(sc.getConf)
 
-    val dataBlocks = GLDA.convertBowDocs(data, numTopics, numThreads)
+    val dataBlocks = GLDA.convertBowDocs(bowDocsRdd, numTopics, numThreads)
     val paraBlocks = GLDA.buildParaBlocks(dataBlocks)
+    val corpus = (dataBlocks, paraBlocks)
     val params = HyperParams(alpha, beta, eta, mu)
-    val glda = GLDA((dataBlocks, paraBlocks), numTopics, numGroups, numThreads, params, storageLevel)
+    val glda = GLDA(corpus, numTopics, numGroups, numThreads, params, storageLevel)
 
     val pps = new Array[Double](increIter)
     val startedAt = System.nanoTime
@@ -100,7 +102,7 @@ object GLDASuite {
     model
   }
 
-  def sampleCorpus(model: Array[Array[Double]]): Array[DocBow] = {
+  def sampleBowDocs(model: Array[Array[Double]]): Array[DocBow] = {
     val gen = new Random()
     val topicTermSamps = model.map(dist =>
       new AliasTable[Double]().resetDist(dist, null, numTerms)

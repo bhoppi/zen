@@ -96,9 +96,8 @@ object GLDAModel extends Loader[DistributedGLDAModel] {
     if (loadedClassName == sv_className && version == sv_formatVersion) {
       val metas = parseMeta(metadata)
       var rdd = sc.textFile(dataPath).map(line => parseLine(metas, line))
-      rdd = sc.getConf.getOption(cs_numPartitions).map(_.toInt) match {
-        case Some(np) => rdd.coalesce(np, shuffle=true)
-        case None => rdd
+      sc.getConf.getOption(cs_numPartitions).map(_.toInt).filter(_ > rdd.getNumPartitions).foreach { np =>
+        rdd = rdd.coalesce(np, shuffle=true)
       }
       loadGLDAModel(metas, rdd)
     } else {

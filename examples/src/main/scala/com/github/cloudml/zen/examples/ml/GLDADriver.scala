@@ -29,8 +29,6 @@ import scala.annotation.tailrec
 
 
 object GLDADriver {
-  type OptionMap = Map[String, String]
-
   def main(args: Array[String]) {
     val options = parseArgs(args)
     val appStartedTime = System.nanoTime
@@ -45,10 +43,7 @@ object GLDADriver {
     val numPartitions = options("numpartitions").toInt
     assert(numTopics > 0, "numTopics must be greater than 0")
     assert(numGroups > 0, "numGroups must be greater than 0")
-    assert(alpha > 0f)
-    assert(beta > 0f)
-    assert(eta > 0f)
-    assert(mu > 0f)
+    assert(alpha > 0f && beta > 0f && eta > 0f && mu > 0f)
     assert(totalIter > 0, "totalIter must be greater than 0")
     assert(numPartitions > 0, "numPartitions must be greater than 0")
     val params = HyperParams(alpha, beta, eta, mu)
@@ -57,31 +52,21 @@ object GLDADriver {
     val outputPath = options("outputpath")
     val checkpointPath = outputPath + ".checkpoint"
 
-    val slvlStr = options.getOrElse("storagelevel", "MEMORY_AND_DISK").toUpperCase
-    val storageLevel = StorageLevel.fromString(slvlStr)
+    val storageLevelStr = options.getOrElse("storagelevel", "MEMORY_AND_DISK").toUpperCase
+    val storageLevel = StorageLevel.fromString(storageLevelStr)
+    val numThreadsStr = options.getOrElse("numthreads", "1")
+    val numThreads = numThreadsStr.toInt
+    val useKyro = options.get("usekryo").exists(_.toBoolean)
 
     val conf = new SparkConf()
-    conf.set(cs_numTopics, s"$numTopics")
-    conf.set(cs_numGroups, s"$numGroups")
     conf.set(cs_numPartitions, s"$numPartitions")
     conf.set(cs_inputPath, inputPath)
     conf.set(cs_outputpath, outputPath)
-    conf.set(cs_storageLevel, slvlStr)
+    setAppConfs(conf, options)
 
-    val nthdStr = options.getOrElse("numthreads", "1")
-    val numThreads = nthdStr.toInt
-    conf.set(cs_numThreads, nthdStr)
-
-    conf.set(cs_burninIter, options.getOrElse("burniniter", "10"))
-    conf.set(cs_sampleRate, options.getOrElse("samplerate", "1.0"))
-    conf.set(cs_chkptInterval, options.getOrElse("chkptinterval", "10"))
-    conf.set(cs_evalMetric, options.getOrElse("evalmetric", "none"))
-    conf.set(cs_saveInterval, options.getOrElse("saveinterval", "0"))
-    conf.set(cs_saveAsSolid, options.getOrElse("saveassolid", "false"))
-    conf.set(cs_labelsRate, options.getOrElse("labelsrate", "1.0"))
-
-    conf.set("spark.task.cpus", conf.get(cs_numThreads))
-    val useKyro = options.get("usekryo").exists(_.toBoolean)
+    if (numThreads > 1) {
+      conf.set("spark.task.cpus", numThreadsStr)
+    }
     if (useKyro) {
       conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       registerKryoClasses(conf)
@@ -162,16 +147,15 @@ object GLDADriver {
     val usage = "Usage: GLDADriver <Args> [Options] <Input path> <Output path>\n" +
       "  Args: -numTopics=<Int> -numGroups=<Int> -alpha=<Float> -beta=<Float> -eta=<Float> -mu=<Float>\n" +
       "        -totalIter=<Int> -numPartitions=<Int>\n" +
-      "  Options: -sampleRate=<Float(*1.0)>\n" +
-      "           -burninIter=<Int(*3)>\n" +
-      "           -labelsRate=<Float(*1.0)>\n" +
-      "           -numThreads=<Int(*1)>\n" +
-      "           -storageLevel=<StorageLevel(*MEMORY_AND_DISK)>\n" +
+      "  Options: -numThreads=<Int(*1)>\n" +
+      "           -burninIter=<Int(*10)>\n" +
+      "           -sampleRate=<Float(*1.0)>\n" +
       "           -chkptInterval=<Int(*10)> (0 or negative disables checkpoint)\n" +
       "           -evalMetric=<*None|{PPLX|LLH|COH}+>\n" +
       "           -saveInterval=<Int(*0)> (0 or negative disables save at intervals)\n" +
-      "           -saveAsSolid=<true|*false>\n" +
-      "           -ignoreDocId=<true|*false>\n" +
+      "           -saveAsSolid=<Boolean(*true)>\n" +
+      "           -labelsRate=<Float(*1.0)>\n" +
+      "           -storageLevel=<StorageLevel(*MEMORY_AND_DISK)>\n" +
       "           -useKryo=<true|*false>"
     if (args.length < 10) {
       println(usage)
