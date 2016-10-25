@@ -137,10 +137,7 @@ object GLDADriver {
     if (rawDocs.getNumPartitions < numPartitions) {
       rawDocs = rawDocs.coalesce(numPartitions, shuffle=true)
     }
-    val bowDocs = GLDA.parseRawDocs(rawDocs, numGroups, numThreads, labelsRate)
-    val dataBlocks = GLDA.convertBowDocs(bowDocs, numTopics, numThreads)
-    val paraBlocks = GLDA.buildParaBlocks(dataBlocks)
-    (dataBlocks, paraBlocks)
+    GLDA.initCorpus(rawDocs, numTopics, numGroups, numThreads, labelsRate, storageLevel)
   }
 
   def parseArgs(args: Array[String]): OptionMap = {

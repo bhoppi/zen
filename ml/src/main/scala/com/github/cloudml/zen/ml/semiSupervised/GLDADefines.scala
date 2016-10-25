@@ -78,6 +78,16 @@ object GLDADefines {
 
   def getDensed(bv: Vector[Int]): DenseVector[Int] = bv match {
     case v: DenseVector[Int] => v
-    case v: SparseVector[Int] => v.toDenseVector
+    case v: SparseVector[Int] =>
+      val used = v.used
+      val index = v.index
+      val data = v.data
+      val arr = new Array[Int](v.length)
+      var i = 0
+      while (i < used) {
+        arr(index(i)) = data(i)
+        i += 1
+      }
+      new DenseVector(arr)
   }
 }

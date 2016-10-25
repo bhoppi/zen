@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 
 import scala.collection.JavaConversions._
-import scala.collection.mutable
+import scala.collection.concurrent.TrieMap
 import scala.concurrent.Future
 
 
@@ -51,7 +51,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
       dataIter.map { case (pid, DataBlock(termRecs, docRecs)) =>
         // Stage 1: assign all termTopics
         var startTime = System.nanoTime
-        val termVecs = new mutable.HashMap[Int, CompressedVector]()
+        val termVecs = new TrieMap[Int, CompressedVector]()
         implicit val es = initExecutionContext(numThreads)
         val allAssign = shpsIter.map(shp => withFuture {
           val (_, ShippedAttrsBlock(termIds, termAttrs)) = shp
@@ -327,7 +327,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
       val prob = if (k == curTopic) {
         (muSig + (denseTermTopics(k) - 1).toDouble / nK(k)) * (cnt - 1)
       } else {
-        (muSig + denseTermTopics(k) / nK(k)) * cnt
+        (muSig + denseTermTopics(k).toDouble / nK(k)) * cnt
       }
       sum += prob / docLen
       cdf(i) = sum
@@ -389,10 +389,10 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
                 case v: DenseVector[Int] => v :+= termTopics
                 case v: SparseVector[Int] =>
                   v :+= termTopics
-                  if (v.activeSize >= dscp) v.toDenseVector else v
+                  if (v.activeSize >= dscp) getDensed(v) else v
               }
             }
-            marks.set(termId, Int.MaxValue)
+            marks.set(i, Int.MaxValue)
           }
         })
         withAwaitReady(Future.sequence(allAgg))

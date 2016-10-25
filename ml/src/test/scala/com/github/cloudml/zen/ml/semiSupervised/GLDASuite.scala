@@ -42,11 +42,9 @@ class GLDASuite extends FunSuite with SharedSparkContext {
   test("GLDA || Gibbs sampling") {
     val model = genGLDAModel()
     val bowDocs = sampleBowDocs(model)
-    val bowDocsRdd = sc.parallelize(bowDocs, 2)
+    val bowDocsRDD = sc.parallelize(bowDocs, 2)
 
-    val dataBlocks = GLDA.convertBowDocs(bowDocsRdd, numTopics, numThreads)
-    val paraBlocks = GLDA.buildParaBlocks(dataBlocks)
-    val corpus = (dataBlocks, paraBlocks)
+    val corpus = GLDA.initCorpus(bowDocsRDD, numTopics, numGroups, storageLevel)
     val params = HyperParams(alpha, beta, eta, mu)
     val glda = GLDA(corpus, numTopics, numGroups, numThreads, params, storageLevel)
 

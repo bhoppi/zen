@@ -45,7 +45,7 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
   val numTokens: Long,
   val params: HyperParams,
   var algo: GLDATrainer,
-  var storageLevel: StorageLevel) {
+  var storageLevel: StorageLevel) extends Serializable {
 
   @transient var globalVarsBc: Broadcast[GlobalVars] = _
   @transient lazy val seed = new XORShiftRandom().nextInt()
@@ -55,6 +55,15 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
   @inline def scContext: SparkContext = dataBlocks.context
 
   @inline def scConf: SparkConf = scContext.getConf
+
+  def init(): GLDA = {
+    val newParaBlocks = algo.updateParaBlocks(dataBlocks, paraBlocks)
+    newParaBlocks.persist(storageLevel).setName("ParaBlocks-0")
+    newParaBlocks.count()
+    paraBlocks.unpersist(blocking=false)
+    paraBlocks = newParaBlocks
+    this
+  }
 
   def fit(totalIter: Int): Unit = {
     val evalMetrics = scConf.get(cs_evalMetric).split(raw"\+")
@@ -94,6 +103,7 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
   }
 
   def fitIteration(sampIter: Int, burninIter: Int, needChkpt: Boolean): Unit = {
+    val startedAt = System.nanoTime
     val shippeds = algo.ShipParaBlocks(dataBlocks, paraBlocks)
     val newDataBlocks = algo.SampleNGroup(dataBlocks, shippeds, globalVarsBc, params, seed, sampIter, burninIter)
     newDataBlocks.persist(storageLevel).setName(s"DataBlocks-$sampIter")
@@ -121,6 +131,8 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
       dataCpFile = newDataBlocks.getCheckpointFile.get
       paraCpFile = newParaBlocks.getCheckpointFile.get
     }
+    val elapsedSeconds = (System.nanoTime - startedAt) / 1e9
+    println(s"Sampling & grouping & updating paras $sampIter takes: $elapsedSeconds secs")
   }
 
   def toGLDAModel: DistributedGLDAModel = {
@@ -158,17 +170,69 @@ object GLDA {
     params: HyperParams,
     storageLevel: StorageLevel): GLDA = {
     val (dataBlocks, paraBlocks) = corpus
-    dataBlocks.persist(storageLevel).setName("DataBlocks-0")
-    paraBlocks.persist(storageLevel).setName("ParaBlocks-0")
-    val numTerms = paraBlocks.map(_._2.attrs.length).reduce(_ + _)
-    println(s"terms in the corpus: $numTerms")
+    val numTerms = paraBlocks.map(_._2.index.keySet.max).max() + 1
+    val activeTerms = paraBlocks.map(_._2.attrs.length).reduce(_ + _)
+    println(s"terms in the corpus: $numTerms, $activeTerms of which are active")
     val numDocs = dataBlocks.map(_._2.DocRecs.length).reduce(_ + _)
     println(s"docs in the corpus: $numDocs")
-    val numTokens = dataBlocks.flatMap(_._2.termRecs.iterator.map(_.termData.length.toLong / 2)).reduce(_ + _)
+
+    val numTokens = dataBlocks.mapPartitions(_.map { dbp =>
+      val docRecs = dbp._2.DocRecs
+      val totalDocSize = docRecs.length
+      val sizePerThrd = {
+        val npt = totalDocSize / numThreads
+        if (npt * numThreads == totalDocSize) npt else npt + 1
+      }
+      implicit val es = initExecutionContext(numThreads)
+      val allNGK = Range(0, numThreads).map(thid => withFuture {
+        var numTokensThrd = 0L
+        val posN = math.min(sizePerThrd * (thid + 1), totalDocSize)
+        var pos = sizePerThrd * thid
+        while (pos < posN) {
+          val docData = docRecs(pos).docData
+          var i = 0
+          while (i < docData.length) {
+            val ind = docData(i)
+            if (ind >= 0) {
+              numTokensThrd += 1
+              i += 2
+            } else {
+              numTokensThrd += -ind
+              i += 2 - ind
+            }
+          }
+          pos += 1
+        }
+        numTokensThrd
+      })
+      withAwaitResultAndClose(Future.reduce(allNGK)(_ + _))
+    }).reduce(_ + _)
     println(s"tokens in the corpus: $numTokens")
+
     val algo = new GLDATrainer(numTopics, numGroups, numThreads)
-    new GLDA(dataBlocks, paraBlocks, numTopics, numGroups, numThreads, numTerms, numDocs, numTokens,
+    val glda = new GLDA(dataBlocks, paraBlocks, numTopics, numGroups, numThreads, numTerms, numDocs, numTokens,
       params, algo, storageLevel)
+    glda.init()
+  }
+
+  def initCorpus(rawDocsRDD: RDD[String],
+    numTopics: Int,
+    numGroups: Int,
+    numThreads: Int,
+    labelsRate: Float,
+    storageLevel: StorageLevel): (RDD[(Int, DataBlock)], RDD[(Int, ParaBlock)]) = {
+    val bowDocsRDD = GLDA.parseRawDocs(rawDocsRDD, numGroups, numThreads, labelsRate)
+    initCorpus(bowDocsRDD, numTopics, numThreads, storageLevel)
+  }
+
+  def initCorpus(bowDocsRDD: RDD[DocBow],
+    numTopics: Int,
+    numThreads: Int,
+    storageLevel: StorageLevel): (RDD[(Int, DataBlock)], RDD[(Int, ParaBlock)]) = {
+    val dataBlocks = GLDA.convertBowDocs(bowDocsRDD, numTopics, numThreads)
+    dataBlocks.persist(storageLevel).setName("DataBlocks-0")
+    val paraBlocks = GLDA.buildParaBlocks(dataBlocks)
+    (dataBlocks, paraBlocks)
   }
 
   def parseRawDocs(rawDocsRDD: RDD[String],
@@ -204,7 +268,9 @@ object GLDA {
             val pair = field.split(":")
             val termId = pair(0).toInt
             var termCnt = if (pair.length > 1) pair(1).toInt else 1
-            docTerms(termId) += termCnt
+            if (termCnt > 0) {
+              docTerms(termId) += termCnt
+            }
           }
           docBows(pos) = DocBow(docId, docGrp, docTerms)
           pos += 1
@@ -242,7 +308,7 @@ object GLDA {
             if (termCnt == 1) {
               docData += termId
               docData += gen.nextInt(numTopics)
-            } else {
+            } else if (termCnt > 1) {
               docData += -termCnt
               docData += termId
               var c = 0
@@ -264,7 +330,7 @@ object GLDA {
       val l2g = new Array[Int](numLocalTerms)
       val g2l = new mutable.HashMap[Int, Int]()
       val tqs = Array.fill(numLocalTerms)(new ConcurrentLinkedQueue[(Int, Int)]())
-      for ((termId, localIdx) <- localTerms.zipWithIndex) {
+      for ((termId, localIdx) <- localTerms.iterator.zipWithIndex) {
         l2g(localIdx) = termId
         g2l(termId) = localIdx
       }
