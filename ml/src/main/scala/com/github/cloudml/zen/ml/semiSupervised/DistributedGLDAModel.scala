@@ -21,7 +21,7 @@ import java.io._
 
 import breeze.linalg._
 import com.github.cloudml.zen.ml.semiSupervised.GLDADefines._
-import com.github.cloudml.zen.ml.util._
+import com.github.cloudml.zen.ml.util.{LoaderUtils, SparkUtils}
 import org.apache.hadoop.fs.{FileUtil, Path}
 import org.apache.spark.SparkContext
 import org.apache.spark.mllib.util.{Loader, Saveable}
@@ -45,20 +45,15 @@ class DistributedGLDAModel(@transient val termTopicsRDD: RDD[(Int, Vector[Int])]
   }
 
   override def save(sc: SparkContext, path: String): Unit = {
-    val HyperParams(alpha, beta, eta, mu) = params
-    val json = ("class" -> sv_className) ~ ("version" -> sv_formatVersion) ~
-      ("numTopics" -> numTopics) ~ ("numGroups" -> numGroups) ~ ("numTerms" -> numTerms) ~
-      ("alpha" -> alpha) ~ ("beta" -> beta) ~ ("eta" -> eta) ~ ("mu" -> mu)
-    val metadata = compact(render(json))
-
     val saveAsSolid = sc.getConf.get(cs_saveAsSolid).toBoolean
     val savPath = if (saveAsSolid) new Path(path + ".sav") else new Path(path)
     val savDir = savPath.toUri.toString
     val metaDir = LoaderUtils.metadataPath(savDir)
     val dataDir = LoaderUtils.dataPath(savDir)
     val fs = SparkUtils.getFileSystem(sc.getConf, savPath)
-
     fs.delete(savPath, true)
+
+    val metadata = toStringMeta
     sc.parallelize(Seq(metadata), 1).saveAsTextFile(metaDir)
     // save model with the topic or word-term descending order
     termTopicsRDD.map { case (id, vector) =>
@@ -84,44 +79,62 @@ class DistributedGLDAModel(@transient val termTopicsRDD: RDD[(Int, Vector[Int])]
     }
   }
 
+  def toStringMeta: String = {
+    val HyperParams(alpha, beta, eta, mu) = params
+    val json = ("class" -> sv_className) ~ ("version" -> sv_formatVersion) ~
+      ("numTopics" -> numTopics) ~ ("numGroups" -> numGroups) ~ ("numTerms" -> numTerms) ~
+      ("alpha" -> alpha) ~ ("beta" -> beta) ~ ("eta" -> eta) ~ ("mu" -> mu)
+    compact(render(json))
+  }
+
   override protected def formatVersion: String = sv_formatVersion
 }
 
 object GLDAModel extends Loader[DistributedGLDAModel] {
-  case class MetaT(numTopics: Int, numGroups: Int, numTerms: Int, params: HyperParams)
+  case class MetaT(clazz: String, version: String, numTopics: Int, numGroups: Int, numTerms: Int,
+    alpha: Float, beta: Float, eta: Float, mu: Float)
 
   override def load(sc: SparkContext, path: String): DistributedGLDAModel = {
-    val (loadedClassName, version, metadata) = LoaderUtils.loadMetadata(sc, path)
-    val dataPath = LoaderUtils.dataPath(path)
-    if (loadedClassName == sv_className && version == sv_formatVersion) {
-      val metas = parseMeta(metadata)
-      var rdd = sc.textFile(dataPath).map(line => parseLine(metas, line))
-      sc.getConf.getOption(cs_numPartitions).map(_.toInt).filter(_ > rdd.getNumPartitions).foreach { np =>
-        rdd = rdd.coalesce(np, shuffle=true)
-      }
-      loadGLDAModel(metas, rdd)
+    val saveAsSolid = sc.getConf.get(cs_saveAsSolid).toBoolean
+    val (metas, rdd) = if (saveAsSolid) {
+      LoaderUtils.HDFSFile2RDD(sc, path, parseMeta, parseLine)
     } else {
-      throw new Exception(s"GLDAModel.load did not recognize model with (className, format version):" +
-        s"($loadedClassName, $version). Supported: ($sv_className, $sv_formatVersion)")
+      val metas = parseMeta(sc.textFile(LoaderUtils.metadataPath(path)).first())
+      val rdd = sc.textFile(LoaderUtils.dataPath(path)).map(parseLine(metas, _))
+      (metas, rdd)
     }
+    val MetaT(clazz, version, numTopics, numGroups, numTerms, alpha, beta, eta, mu) = metas
+    validateSave(clazz, version)
+
+    val partRdd = sc.getConf.getOption(cs_numPartitions).map(_.toInt) match {
+      case Some(numParts) if numParts > rdd.getNumPartitions =>
+        rdd.coalesce(numParts, shuffle=true)
+      case _ => rdd
+    }
+    val storageLevel = StorageLevel.MEMORY_AND_DISK
+    val termTopicsRDD = partRdd.persist(storageLevel)
+    termTopicsRDD.count()
+    val params = HyperParams(alpha, beta, eta, mu)
+    new DistributedGLDAModel(termTopicsRDD, numTopics, numGroups, numTerms, params, storageLevel)
   }
 
-  def loadFromSolid(sc: SparkContext, path: String): DistributedGLDAModel = {
-    val (metas, rdd) = LoaderUtils.HDFSFile2RDD(sc, path, header => parseMeta(parse(header)), parseLine)
-    loadGLDAModel(metas, rdd)
-  }
-
-  def parseMeta(metadata: JValue): MetaT = {
+  def parseMeta(metadata: String): MetaT = {
     implicit val formats = DefaultFormats
-    val numTopics = (metadata \ "numTopics").extract[Int]
-    val numGroups = (metadata \ "numGroups").extract[Int]
-    val numTerms = (metadata \ "numTerms").extract[Int]
-    val params = (metadata \ "params").extract[HyperParams]
-    MetaT(numTopics, numGroups, numTerms, params)
+    val json = parse(metadata)
+    val clazz = (json \ "class").extract[String]
+    val version = (json \ "version").extract[String]
+    val numTopics = (json \ "numTopics").extract[Int]
+    val numGroups = (json \ "numGroups").extract[Int]
+    val numTerms = (json \ "numTerms").extract[Int]
+    val alpha = (json \ "alpha").extract[Float]
+    val beta = (json \ "beta").extract[Float]
+    val eta = (json \ "eta").extract[Float]
+    val mu = (json \ "mu").extract[Float]
+    MetaT(clazz, version, numTopics, numGroups, numTerms, alpha, beta, eta, mu)
   }
 
-  def parseLine(metas: MetaT, line: String): (Int, SparseVector[Int]) = {
-    val sv = SparseVector.zeros[Int](metas.numTopics)
+  def parseLine(metas: MetaT, line: String): (Int, Vector[Int]) = {
+    val sv: Vector[Int] = SparseVector.zeros[Int](metas.numTopics)
     val arr = line.split("\t").view
     arr.tail.foreach { sub =>
       val Array(index, value) = sub.split(":")
@@ -130,10 +143,10 @@ object GLDAModel extends Loader[DistributedGLDAModel] {
     (arr.head.toInt, sv)
   }
 
-  def loadGLDAModel(metas: MetaT, rdd: RDD[(Int, SparseVector[Int])]): DistributedGLDAModel = {
-    val MetaT(numTopics, numGroups, numTerms, params) = metas
-    val storageLevel = StorageLevel.MEMORY_AND_DISK
-    val termTopicsRDD = rdd.asInstanceOf[RDD[(Int, Vector[Int])]].persist(storageLevel)
-    new DistributedGLDAModel(termTopicsRDD, numTopics, numGroups, numTerms, params, storageLevel)
+  def validateSave(clazz: String, version: String): Unit = {
+    if (clazz != sv_className || version != sv_formatVersion) {
+      throw new Exception(s"GLDAModel.load did not recognize model with (className, format version):" +
+        s"($clazz, $version). Supported: ($sv_className, $sv_formatVersion)")
+    }
   }
 }

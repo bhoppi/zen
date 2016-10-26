@@ -240,7 +240,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
   }
 
   def resetDist_tegSparse(piGK: DenseMatrix[Float],
-    nK: DenseVector[Int],
+    nK: Array[Int],
     termTopics: Vector[Int],
     denseTermTopics: DenseVector[Int],
     eta: Double)(g: Int): AliasTable[Double] = {
@@ -278,7 +278,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     tegDist
   }
 
-  def resetDist_dtmSparse(nK: DenseVector[Int],
+  def resetDist_dtmSparse(nK: Array[Int],
     denseTermTopics: DenseVector[Int])(dtm: CumulativeDist[Double],
     docTopics: SparseVector[Int],
     docLen: Int,
@@ -306,7 +306,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     dtm
   }
 
-  def resetDist_dtmSparse_wAdj(nK: DenseVector[Int],
+  def resetDist_dtmSparse_wAdj(nK: Array[Int],
     denseTermTopics: DenseVector[Int])(dtm: CumulativeDist[Double],
     docTopics: SparseVector[Int],
     docLen: Int,
@@ -477,19 +477,18 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
       (nGKLc, nGWLc, dGLc)
     }).collect().par.reduce((a, b) => (a._1 :+= b._1, a._2 :+= b._2, a._3 :+= b._3))
 
-    val nG = Range(0, numGroups).par.map(g => nGK(g, ::).t.valuesIterator.map(_.toLong).sum).seq.toArray
+    val nG = Range(0, numGroups).par.map(g => sum(convert(nGK(g, ::).t, Long))).toArray
+    val nK = Range(0, numTopics).par.map(k => sum(nGK(::, k))).toArray
     val alpha = params.alpha
     val beta = params.beta
     val piGK = DenseMatrix.zeros[Float](numGroups, numTopics)
     val sigGW = DenseMatrix.zeros[Float](numGroups, numTerms)
-    val nK = DenseVector.zeros[Int](numTopics)
     Range(0, numGroups).par.foreach { g =>
       val piGKDenom = 1f / (nG(g) + alpha * numTopics)
       val sigGWDenom = 1f / (nG(g) + beta * numTerms)
       for (k <- 0 until numTopics) {
         val ngk = nGK(g, k)
         piGK(g, k) = (ngk + alpha) * piGKDenom
-        nK(k) += ngk
       }
       for (w <- 0 until numTerms) {
         sigGW(g, w) = (nGW(g, w) + beta) * sigGWDenom

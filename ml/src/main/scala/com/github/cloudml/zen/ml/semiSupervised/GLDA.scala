@@ -82,6 +82,7 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
       val needChkpt = canChkpt && iter % chkptIntv == 1
 
       val globalVars = algo.collectGlobalVariables(dataBlocks, params, numTerms)
+      assert(sum(convert(globalVars.nK, Long)) == numTokens && sum(globalVars.dG) == numDocs)
       globalVarsBc = scContext.broadcast(globalVars)
       fitIteration(iter, burninIter, needChkpt)
       if (toEval) {
@@ -173,7 +174,7 @@ object GLDA {
     val numTerms = paraBlocks.map(_._2.index.keySet.max).max() + 1
     val activeTerms = paraBlocks.map(_._2.attrs.length).reduce(_ + _)
     println(s"terms in the corpus: $numTerms, $activeTerms of which are active")
-    val numDocs = dataBlocks.map(_._2.DocRecs.length).reduce(_ + _)
+    val numDocs = dataBlocks.map(_._2.DocRecs.length.toLong).reduce(_ + _)
     println(s"docs in the corpus: $numDocs")
 
     val numTokens = dataBlocks.mapPartitions(_.map { dbp =>

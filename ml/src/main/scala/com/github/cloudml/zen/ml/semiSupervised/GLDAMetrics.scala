@@ -151,7 +151,7 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
   }
 
   def calcSum_tegSparses(piGK: DenseMatrix[Float],
-    nK: DenseVector[Int],
+    nK: Array[Int],
     termTopics: Vector[Int],
     eta: Float): DenseVector[Float] = {
     val numTopics = piGK.cols
@@ -181,7 +181,7 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
     tegSums
   }
 
-  def calcSum_dtmSparse(nK: DenseVector[Int],
+  def calcSum_dtmSparse(nK: Array[Int],
     denseTermTopics: DenseVector[Int])(docTopics: SparseVector[Int],
     docLen: Int,
     muSig: Float): Float = {

@@ -54,7 +54,8 @@ class GLDASuite extends FunSuite with SharedSparkContext {
       glda.fit(totalIter)
       pps(i - 1) = GLDAMetrics(glda, evalMetrics)(0).getTotal
     }
-    println((System.nanoTime - startedAt) / 1e9)
+    val trainingTime = (System.nanoTime - startedAt) / 1e9
+    println(s"total training time: $trainingTime s")
     pps.foreach(println)
 
     val ppsDiff = pps.init.zip(pps.tail).map { case (lhs, rhs) => lhs - rhs }
