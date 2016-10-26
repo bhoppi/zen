@@ -123,7 +123,6 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
 
             val TermRec(termId, termData) = termRec
             val termTopics = decomp.CV2BV(termVecs(termId))
-            val term_sigG = sigGW(::, termId)
             val denseTermTopics = getDensed(termTopics)
             val tegDists = new Array[AliasTable[Double]](numGroups)
             val resetDist_tegSparse_f = resetDist_tegSparse(piGK, nK, termTopics, denseTermTopics, eta) _
@@ -135,7 +134,6 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
               var docI = termData(i + 1)
               val docData = docRecs(docPos).docData
               val (docTopics, docLen, g) = docResults(docPos)
-              val muSig = mu * term_sigG(g)
               val tegDist = {
                 var dist = tegDists(g)
                 if (dist == null) {
@@ -144,6 +142,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
                 }
                 dist
               }
+              val muSig = mu * sigGW(g, termId)
               scaleSamp.resetScaling(muSig, egDists(g))
               var ind = docData(docI)
               if (ind >= 0) {
@@ -478,7 +477,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
       (nGKLc, nGWLc, dGLc)
     }).collect().par.reduce((a, b) => (a._1 :+= b._1, a._2 :+= b._2, a._3 :+= b._3))
 
-    val nG = Range(0, numGroups).par.map(g => sum(nGK(g, ::))).seq.toArray
+    val nG = Range(0, numGroups).par.map(g => nGK(g, ::).t.valuesIterator.map(_.toLong).sum).seq.toArray
     val alpha = params.alpha
     val beta = params.beta
     val piGK = DenseMatrix.zeros[Float](numGroups, numTopics)

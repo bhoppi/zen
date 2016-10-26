@@ -25,7 +25,7 @@ import com.github.cloudml.zen.ml.util.Concurrent._
 import com.github.cloudml.zen.ml.util.{BVDecompressor, CompressedVector}
 
 import scala.collection.JavaConversions._
-import scala.collection.mutable
+import scala.collection.concurrent.TrieMap
 import scala.concurrent.Future
 
 
@@ -57,7 +57,7 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
       val GlobalVars(piGK, sigGW, nK, _) = globalVarsBc.value
       dataIter.map { case (pid, DataBlock(termRecs, docRecs)) =>
         // Stage 1: assign all termTopics
-        val termVecs = new mutable.HashMap[Int, CompressedVector]()
+        val termVecs = new TrieMap[Int, CompressedVector]()
         implicit val es = initExecutionContext(numThreads)
         val allAssign = shpsIter.map(shp => withFuture {
           val (_, ShippedAttrsBlock(termIds, termAttrs)) = shp
@@ -116,7 +116,6 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
 
             val TermRec(termId, termData) = termRec
             val termTopics = decomp.CV2BV(termVecs(termId))
-            val term_sigG = sigGW(::, termId)
             val denseTermTopics = getDensed(termTopics)
             val tegSums = calcSum_tegSparses(piGK, nK, termTopics, eta)
             val calcSum_dtmSparse_f = calcSum_dtmSparse(nK, denseTermTopics) _
@@ -126,10 +125,10 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
               val docI = termData(i + 1)
               val docData = docRecs(docPos).docData
               val (docTopics, docLen, g) = docResults(docPos)
-              val muSig = mu * term_sigG(g)
-              var totalSum = muSig * egSums(g) + tegSums(g)
+              val muSig = mu * sigGW(g, termId)
+              var totalSum = muSig * egSums(g) + tegSums(g) + calcSum_dtmSparse_f(docTopics, docLen, muSig)
+              totalSum /= (1f + eta) * (1f + mu)
               val ind = docData(docI)
-              totalSum += calcSum_dtmSparse_f(docTopics, docLen, muSig)
               val termCnt = if (ind >= 0) 1 else -ind
               llhSum += termCnt * math.log(totalSum)
               i += 2

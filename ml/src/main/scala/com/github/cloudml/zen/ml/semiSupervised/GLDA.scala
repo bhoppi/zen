@@ -57,11 +57,11 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
   @inline def scConf: SparkConf = scContext.getConf
 
   def init(): GLDA = {
-    val newParaBlocks = algo.updateParaBlocks(dataBlocks, paraBlocks)
-    newParaBlocks.persist(storageLevel).setName("ParaBlocks-0")
-    newParaBlocks.count()
+    val initParaBlocks = algo.updateParaBlocks(dataBlocks, paraBlocks)
+    initParaBlocks.persist(storageLevel).setName("ParaBlocks-0")
+    initParaBlocks.count()
     paraBlocks.unpersist(blocking=false)
-    paraBlocks = newParaBlocks
+    paraBlocks = initParaBlocks
     this
   }
 
@@ -112,7 +112,7 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
       newDataBlocks.count()
     }
 
-    val newParaBlocks = algo.updateParaBlocks(dataBlocks, paraBlocks)
+    val newParaBlocks = algo.updateParaBlocks(newDataBlocks, paraBlocks)
     newParaBlocks.persist(storageLevel).setName(s"ParaBlocks-$sampIter")
     if (needChkpt) {
       newParaBlocks.checkpoint()
