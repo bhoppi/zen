@@ -185,7 +185,7 @@ object GLDA {
         if (npt * numThreads == totalDocSize) npt else npt + 1
       }
       implicit val es = initExecutionContext(numThreads)
-      val allNGK = Range(0, numThreads).map(thid => withFuture {
+      val allToken = Range(0, numThreads).map(thid => withFuture {
         var numTokensThrd = 0L
         val posN = math.min(sizePerThrd * (thid + 1), totalDocSize)
         var pos = sizePerThrd * thid
@@ -206,7 +206,7 @@ object GLDA {
         }
         numTokensThrd
       })
-      withAwaitResultAndClose(Future.reduce(allNGK)(_ + _))
+      withAwaitResultAndClose(Future.reduce(allToken)(_ + _))
     }).reduce(_ + _)
     println(s"tokens in the corpus: $numTokens")
 
@@ -286,7 +286,7 @@ object GLDA {
   def convertBowDocs(bowDocsRDD: RDD[DocBow],
     numTopics: Int,
     numThreads: Int): RDD[(Int, DataBlock)] = {
-    val numParts = bowDocsRDD.getNumPartitions
+    val numParts = bowDocsRDD.partitions.length
     bowDocsRDD.mapPartitionsWithIndex { (pid, iter) =>
       val docs = iter.toArray
       val totalDocSize = docs.length
@@ -369,7 +369,7 @@ object GLDA {
   }
 
   def buildParaBlocks(dataBlocks: RDD[(Int, DataBlock)]): RDD[(Int, ParaBlock)] = {
-    val numParts = dataBlocks.getNumPartitions
+    val numParts = dataBlocks.partitions.length
     val routesRdd = dataBlocks.mapPartitions(_.flatMap { case (pid, db) =>
       db.termRecs.iterator.map(tr => (tr.termId, pid))
     }).partitionBy(new HashPartitioner(numParts))

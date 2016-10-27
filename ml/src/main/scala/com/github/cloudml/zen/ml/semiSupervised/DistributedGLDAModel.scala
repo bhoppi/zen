@@ -17,7 +17,7 @@
 
 package com.github.cloudml.zen.ml.semiSupervised
 
-import java.io._
+import java.io.IOException
 
 import breeze.linalg._
 import com.github.cloudml.zen.ml.semiSupervised.GLDADefines._
@@ -107,7 +107,7 @@ object GLDAModel extends Loader[DistributedGLDAModel] {
     validateSave(clazz, version)
 
     val partRdd = sc.getConf.getOption(cs_numPartitions).map(_.toInt) match {
-      case Some(numParts) if numParts > rdd.getNumPartitions =>
+      case Some(numParts) if rdd.partitions.length < numParts =>
         rdd.coalesce(numParts, shuffle=true)
       case _ => rdd
     }

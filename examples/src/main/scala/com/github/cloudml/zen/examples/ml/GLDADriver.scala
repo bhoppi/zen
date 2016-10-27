@@ -104,24 +104,6 @@ object GLDADriver {
     }
   }
 
-  def runTraining(corpus: (RDD[(Int, DataBlock)], RDD[(Int, ParaBlock)]),
-    numTopics: Int,
-    numGroups: Int,
-    numThreads: Int,
-    totalIter: Int,
-    params: HyperParams,
-    storageLevel: StorageLevel): Double = {
-    SparkHacker.gcCleaner(30 * 60, 30 * 60, "LDA_gcCleaner")
-    val trainingStartedTime = System.nanoTime
-    val glda = GLDA(corpus, numTopics, numGroups, numThreads, params, storageLevel)
-    glda.fit(totalIter)
-    val model = glda.toGLDAModel
-    val trainingEndedTime = System.nanoTime
-    println("save the model in term-topic view")
-    model.save()
-    (trainingEndedTime - trainingStartedTime) / 1e9
-  }
-
   def loadCorpus(sc: SparkContext,
     numTopics: Int,
     numGroups: Int,
@@ -134,10 +116,28 @@ object GLDADriver {
     val labelsRate = conf.get(cs_labelsRate).toFloat
     val withReplacement = false
     var rawDocs = sc.textFile(inputPath, numPartitions).sample(withReplacement, sampleRate)
-    if (rawDocs.getNumPartitions < numPartitions) {
+    if (rawDocs.partitions.length < numPartitions) {
       rawDocs = rawDocs.coalesce(numPartitions, shuffle=true)
     }
     GLDA.initCorpus(rawDocs, numTopics, numGroups, numThreads, labelsRate, storageLevel)
+  }
+
+  def runTraining(corpus: (RDD[(Int, DataBlock)], RDD[(Int, ParaBlock)]),
+    numTopics: Int,
+    numGroups: Int,
+    numThreads: Int,
+    totalIter: Int,
+    params: HyperParams,
+    storageLevel: StorageLevel): Double = {
+    SparkHacker.gcCleaner(30 * 60, 30 * 60, "GLDA_gcCleaner")
+    val trainingStartedTime = System.nanoTime
+    val glda = GLDA(corpus, numTopics, numGroups, numThreads, params, storageLevel)
+    glda.fit(totalIter)
+    val model = glda.toGLDAModel
+    val trainingEndedTime = System.nanoTime
+    println("save the model in term-topic view")
+    model.save()
+    (trainingEndedTime - trainingStartedTime) / 1e9
   }
 
   def parseArgs(args: Array[String]): OptionMap = {

@@ -43,7 +43,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     seed: Int,
     sampIter: Int,
     burninIter: Int): RDD[(Int, DataBlock)] = {
-    val newSeed = (seed + sampIter) * dataBlocks.getNumPartitions
+    val newSeed = (seed + sampIter) * dataBlocks.partitions.length
     // Below identical map is used to isolate the impact of locality of CheckpointRDD
     val isoRDD = dataBlocks.mapPartitions(_.seq, preservesPartitioning=true)
     isoRDD.zipPartitions(shippeds, preservesPartitioning=true) { (dataIter, shpsIter) =>
