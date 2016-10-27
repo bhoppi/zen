@@ -71,7 +71,11 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
     val saveIntv = scConf.get(cs_saveInterval).toInt
     if (toEval) {
       println("Before Gibbs sampling:")
+      val globalVars = algo.collectGlobalVariables(dataBlocks, params, numTerms)
+      globalVarsBc = scContext.broadcast(globalVars)
       GLDAMetrics(this, evalMetrics).foreach(_.output(println))
+      globalVarsBc.unpersist(blocking=false)
+      globalVarsBc = null
     }
     val burninIter = scConf.get(cs_burninIter).toInt
     val chkptIntv = scConf.get(cs_chkptInterval).toInt
@@ -89,6 +93,7 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
         GLDAMetrics(this, evalMetrics).foreach(_.output(println))
       }
       globalVarsBc.unpersist(blocking=false)
+      globalVarsBc = null
 
       if (saveIntv > 0 && iter % saveIntv == 0 && iter < totalIter) {
         val model = toGLDAModel
