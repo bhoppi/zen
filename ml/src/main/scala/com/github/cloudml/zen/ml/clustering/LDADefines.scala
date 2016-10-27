@@ -69,6 +69,8 @@ object LDADefines {
     -(docId + 1L)
   }
 
+  @inline def recoverDocId(docId: VertexId): Long = -docId - 1L
+
   @inline def isDocId(vid: VertexId): Boolean = vid < 0L
 
   @inline def isTermId(vid: VertexId): Boolean = vid >= 0L

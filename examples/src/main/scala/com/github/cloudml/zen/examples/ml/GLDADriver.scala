@@ -133,6 +133,7 @@ object GLDADriver {
     val trainingStartedTime = System.nanoTime
     val glda = GLDA(corpus, numTopics, numGroups, numThreads, params, storageLevel)
     glda.fit(totalIter)
+    glda.saveDocModel()
     val model = glda.toGLDAModel
     val trainingEndedTime = System.nanoTime
     println("save the model in term-topic view")

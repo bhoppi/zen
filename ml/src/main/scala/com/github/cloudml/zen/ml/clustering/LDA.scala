@@ -17,12 +17,14 @@
 
 package com.github.cloudml.zen.ml.clustering
 
+import java.io.IOException
+
 import breeze.linalg.{DenseVector => BDV}
 import com.github.cloudml.zen.ml.clustering.LDADefines._
 import com.github.cloudml.zen.ml.clustering.algorithm.LDATrainer
 import com.github.cloudml.zen.ml.partitioner._
 import com.github.cloudml.zen.ml.util._
-import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.{FileUtil, Path}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.graphx2._
 import org.apache.spark.graphx2.impl._
@@ -173,6 +175,36 @@ class LDA(@transient var edges: EdgeRDDImpl[TA, _],
     new DistributedLDAModel(termTopicsRDD, numTopics, numTerms, numTokens, alpha, beta, alphaAS, storageLevel)
   }
 
+  def saveDocModel(): Unit = {
+    val saveAsSolid = scConf.getBoolean(cs_saveAsSolid, false)
+    val outputPath = scConf.get(cs_outputpath)
+    val docSave = outputPath + ".docsave"
+    val docSavePath = new Path(docSave)
+    val fs = SparkUtils.getFileSystem(scConf, docSavePath)
+    fs.delete(docSavePath, true)
+    docVertices.mapPartitions { iter =>
+      val decomp = new BVDecompressor(numTopics)
+      iter.map { case (docId, cv) =>
+        val did = recoverDocId(docId)
+        val docTopics = decomp.CV2BV(cv).asInstanceOf[Ndk]
+        val list = docTopics.activeIterator.toSeq.sortBy(-_._2).map(t => s"${t._1}:${t._2}").mkString("\t")
+        s"$did\t$list"
+      }
+    }.saveAsTextFile(docSave)
+    if (saveAsSolid) {
+      val cpmgPath = new Path(outputPath + ".cpmg")
+      fs.delete(cpmgPath, true)
+      var suc = FileUtil.copyMerge(fs, docSavePath, fs, cpmgPath, true, scContext.hadoopConfiguration, null)
+      if (suc) {
+        suc = fs.rename(cpmgPath, docSavePath)
+      }
+      if (!suc) {
+        fs.delete(cpmgPath, true)
+        throw new IOException("Save doc model error!")
+      }
+    }
+  }
+
 //  /**
 //   * run more iters, return averaged counters
 //   * @param filter return which vertices
@@ -292,6 +324,7 @@ object LDA {
     storageLevel: StorageLevel): DistributedLDAModel = {
     val lda = LDA(docs, numTopics, alpha, beta, alphaAS, algo, storageLevel)
     lda.runGibbsSampling(totalIter)
+    lda.saveDocModel()
     lda.toLDAModel
   }
 

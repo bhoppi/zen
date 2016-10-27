@@ -17,6 +17,7 @@
 
 package com.github.cloudml.zen.ml.semiSupervised
 
+import java.io.IOException
 import java.util.concurrent.ConcurrentLinkedQueue
 
 import breeze.linalg._
@@ -24,7 +25,7 @@ import breeze.numerics._
 import com.github.cloudml.zen.ml.semiSupervised.GLDADefines._
 import com.github.cloudml.zen.ml.util.Concurrent._
 import com.github.cloudml.zen.ml.util._
-import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.{FileUtil, Path}
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
@@ -152,6 +153,47 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
       lnSigGW(g, ::) := log(sigGW(g, ::))
     }
     ExtraVars(lnPiGK, lnSigGW)
+  }
+
+  def saveDocModel(): Unit = {
+    val saveAsSolid = scConf.get(cs_saveAsSolid).toBoolean
+    val outputPath = scConf.get(cs_outputpath)
+    val docSave = outputPath + ".docsave"
+    val docSavePath = new Path(docSave)
+    val fs = SparkUtils.getFileSystem(scConf, docSavePath)
+    fs.delete(docSavePath, true)
+    dataBlocks.mapPartitions(_.flatMap(_._2.DocRecs.iterator.map { case DocRec(docId, docGrp, docData) =>
+      val docTopics = SparseVector.zeros[Int](numTopics)
+      var i = 0
+      while (i < docData.length) {
+        var ind = docData(i)
+        if (ind >= 0) {
+          docTopics(docData(i + 1)) += 1
+          i += 2
+        } else {
+          i += 2
+          while (ind < 0) {
+            docTopics(docData(i)) += 1
+            i += 1
+            ind += 1
+          }
+        }
+      }
+      val list = docTopics.activeIterator.toSeq.sortBy(-_._2).map(t => s"${t._1}:${t._2}").mkString("\t")
+      s"$docId:${docGrp.value}\t$list"
+    })).saveAsTextFile(docSave)
+    if (saveAsSolid) {
+      val cpmgPath = new Path(outputPath + ".cpmg")
+      fs.delete(cpmgPath, true)
+      var suc = FileUtil.copyMerge(fs, docSavePath, fs, cpmgPath, true, scContext.hadoopConfiguration, null)
+      if (suc) {
+        suc = fs.rename(cpmgPath, docSavePath)
+      }
+      if (!suc) {
+        fs.delete(cpmgPath, true)
+        throw new IOException("Save doc model error!")
+      }
+    }
   }
 
   def toGLDAModel: DistributedGLDAModel = {
