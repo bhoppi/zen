@@ -20,6 +20,7 @@ package com.github.cloudml.zen.ml.semiSupervised
 import java.util.concurrent.ConcurrentLinkedQueue
 
 import breeze.linalg._
+import breeze.numerics._
 import com.github.cloudml.zen.ml.semiSupervised.GLDADefines._
 import com.github.cloudml.zen.ml.util.Concurrent._
 import com.github.cloudml.zen.ml.util._
@@ -48,6 +49,7 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
   var storageLevel: StorageLevel) extends Serializable {
 
   @transient var globalVarsBc: Broadcast[GlobalVars] = _
+  @transient var extraVarsBc: Broadcast[ExtraVars] = _
   @transient lazy val seed = new XORShiftRandom().nextInt()
   @transient var dataCpFile: String = _
   @transient var paraCpFile: String = _
@@ -71,11 +73,9 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
     val saveIntv = scConf.get(cs_saveInterval).toInt
     if (toEval) {
       println("Before Gibbs sampling:")
-      val globalVars = algo.collectGlobalVariables(dataBlocks, params, numTerms)
-      globalVarsBc = scContext.broadcast(globalVars)
+      globalVarsBc = scContext.broadcast(algo.collectGlobalVariables(dataBlocks, params, numTerms))
       GLDAMetrics(this, evalMetrics).foreach(_.output(println))
       globalVarsBc.unpersist(blocking=false)
-      globalVarsBc = null
     }
     val burninIter = scConf.get(cs_burninIter).toInt
     val chkptIntv = scConf.get(cs_chkptInterval).toInt
@@ -86,14 +86,16 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
       val needChkpt = canChkpt && iter % chkptIntv == 1
 
       val globalVars = algo.collectGlobalVariables(dataBlocks, params, numTerms)
-      assert(sum(convert(globalVars.nK, Long)) == numTokens && sum(globalVars.dG) == numDocs)
+      val GlobalVars(piGK, sigGW, nK, dG) = globalVars
+      assert(sum(convert(nK, Long)) == numTokens && sum(dG) == numDocs)
       globalVarsBc = scContext.broadcast(globalVars)
+      extraVarsBc = scContext.broadcast(calcExtraVars(piGK, sigGW))
       fitIteration(iter, burninIter, needChkpt)
       if (toEval) {
         GLDAMetrics(this, evalMetrics).foreach(_.output(println))
       }
       globalVarsBc.unpersist(blocking=false)
-      globalVarsBc = null
+      extraVarsBc.unpersist(blocking=false)
 
       if (saveIntv > 0 && iter % saveIntv == 0 && iter < totalIter) {
         val model = toGLDAModel
@@ -111,7 +113,8 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
   def fitIteration(sampIter: Int, burninIter: Int, needChkpt: Boolean): Unit = {
     val startedAt = System.nanoTime
     val shippeds = algo.ShipParaBlocks(dataBlocks, paraBlocks)
-    val newDataBlocks = algo.SampleNGroup(dataBlocks, shippeds, globalVarsBc, params, seed, sampIter, burninIter)
+    val newDataBlocks = algo.SampleNGroup(dataBlocks, shippeds, globalVarsBc, extraVarsBc, params,
+      seed, sampIter, burninIter)
     newDataBlocks.persist(storageLevel).setName(s"DataBlocks-$sampIter")
     if (needChkpt) {
       newDataBlocks.checkpoint()
@@ -139,6 +142,16 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
     }
     val elapsedSeconds = (System.nanoTime - startedAt) / 1e9
     println(s"Sampling & grouping & updating paras $sampIter takes: $elapsedSeconds secs")
+  }
+
+  def calcExtraVars(piGK: DenseMatrix[Float], sigGW: DenseMatrix[Float]): ExtraVars = {
+    val lnPiGK = DenseMatrix.zeros[Float](numGroups, numTopics)
+    val lnSigGW = DenseMatrix.zeros[Float](numGroups, numTopics)
+    Range(0, numGroups).par.foreach { g =>
+      lnPiGK(g, ::) := log(piGK(g, ::))
+      lnSigGW(g, ::) := log(sigGW(g, ::))
+    }
+    ExtraVars(lnPiGK, lnSigGW)
   }
 
   def toGLDAModel: DistributedGLDAModel = {

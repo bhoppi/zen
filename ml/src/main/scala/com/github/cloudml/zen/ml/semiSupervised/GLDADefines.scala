@@ -35,6 +35,7 @@ object GLDADefines {
   case class ParaBlock(routes: Array[Array[Int]], index: mutable.HashMap[Int, Int], attrs: Array[CompressedVector])
   case class ShippedAttrsBlock(termIds: Array[Int], termAttrs: Array[CompressedVector])
   case class GlobalVars(piGK: DenseMatrix[Float], sigGW: DenseMatrix[Float], nK: Array[Int], dG: DenseVector[Long])
+  case class ExtraVars(lnPiGK: DenseMatrix[Float], lnSigGW: DenseMatrix[Float])
 
   type OptionMap = Map[String, String]
 

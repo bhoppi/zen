@@ -39,6 +39,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
   def SampleNGroup(dataBlocks: RDD[(Int, DataBlock)],
     shippeds: RDD[(Int, ShippedAttrsBlock)],
     globalVarsBc: Broadcast[GlobalVars],
+    extraVarsBc: Broadcast[ExtraVars],
     params: HyperParams,
     seed: Int,
     sampIter: Int,
@@ -47,7 +48,6 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     // Below identical map is used to isolate the impact of locality of CheckpointRDD
     val isoRDD = dataBlocks.mapPartitions(_.seq, preservesPartitioning=true)
     isoRDD.zipPartitions(shippeds, preservesPartitioning=true) { (dataIter, shpsIter) =>
-      val GlobalVars(piGK, sigGW, nK, dG) = globalVarsBc.value
       dataIter.map { case (pid, DataBlock(termRecs, docRecs)) =>
         // Stage 1: assign all termTopics
         var startTime = System.nanoTime
@@ -111,6 +111,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
         val gens = Array.tabulate(numThreads)(thid => new XORShiftRandom((newSeed + pid) * numThreads + thid))
         val decomps = Array.fill(numThreads)(new BVDecompressor(numTopics))
         val cdfDists = Array.fill(numThreads)(new CumulativeDist[Double]().reset(numTopics))
+        val GlobalVars(piGK, sigGW, nK, dG) = globalVarsBc.value
         val egDists = resetDists_egDenses(piGK, eta)
         val allSampling = termRecs.iterator.map(termRec => withFuture {
           val thid = thq.poll() - 1
@@ -174,9 +175,8 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
         // Stage 4: doc grouping
         startTime = System.nanoTime
         val samps = Array.fill(numThreads)(new CumulativeDist[Float]().reset(numGroups))
-        val priors = log(convert(dG, Float) :+ 1f)
-        val lnPiGK = log(piGK)
-        val lnSigGW = log(sigGW)
+        val priors = log(convert(dG, Float) :+= 1f)
+        val ExtraVars(lnPiGK, lnSigGW) = extraVarsBc.value
         val allGrouping = Range(0, numThreads).map(thid => Future {
           val thid = thq.poll() - 1
           try {

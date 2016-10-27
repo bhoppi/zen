@@ -54,7 +54,6 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
     // Below identical map is used to isolate the impact of locality of CheckpointRDD
     val isoRDD = dataBlocks.mapPartitions(_.seq, preservesPartitioning=true)
     val totalLlh = isoRDD.zipPartitions(shippeds, preservesPartitioning=true) { (dataIter, shpsIter) =>
-      val GlobalVars(piGK, sigGW, nK, _) = globalVarsBc.value
       dataIter.map { case (pid, DataBlock(termRecs, docRecs)) =>
         // Stage 1: assign all termTopics
         val termVecs = new TrieMap[Int, CompressedVector]()
@@ -107,6 +106,7 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
         val mu = params.mu
         val thq = new ConcurrentLinkedQueue(1 to numThreads)
         val decomps = Array.fill(numThreads)(new BVDecompressor(numTopics))
+        val GlobalVars(piGK, sigGW, nK, _) = globalVarsBc.value
         val egSums = calcSum_egDenses(piGK, eta)
         val allPplx = termRecs.iterator.map(termRec => withFuture {
           val thid = thq.poll() - 1
@@ -143,6 +143,7 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
     }.reduce(_ + _)
 
     pplx = math.exp(-totalLlh / glda.numTokens)
+    _calculated = true
     this
   }
 
