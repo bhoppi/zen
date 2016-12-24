@@ -17,7 +17,6 @@
 
 package com.github.cloudml.zen.ml.semiSupervised
 
-import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicIntegerArray
 
 import breeze.linalg._
@@ -29,9 +28,7 @@ import com.github.cloudml.zen.ml.util._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 
-import scala.collection.JavaConversions._
 import scala.collection.concurrent.TrieMap
-import scala.concurrent.Future
 
 
 class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
@@ -48,56 +45,50 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     val isoRDD = dataBlocks.mapPartitions(_.seq, preservesPartitioning=true)
     isoRDD.zipPartitions(shippeds, preservesPartitioning=true) { (dataIter, shpsIter) =>
       dataIter.map { case (pid, DataBlock(termRecs, docRecs)) =>
+        val totalDocSize = docRecs.length
+        implicit val es = initExecutionContext(numThreads)
+
         // Stage 1: assign all termTopics
         var startTime = System.nanoTime
         val termVecs = new TrieMap[Int, CompressedVector]()
-        implicit val es = initExecutionContext(numThreads)
-        val allAssign = shpsIter.map(shp => withFuture {
+        parallelized_foreachElement(shpsIter, numThreads, (shp, _) => {
           val (_, ShippedAttrsBlock(termIds, termAttrs)) = shp
           termIds.iterator.zip(termAttrs.iterator).foreach { case (termId, termAttr) =>
             termVecs(termId) = termAttr
           }
         })
-        withAwaitReady(Future.sequence(allAssign))
         var endTime = System.nanoTime
         var elapsed = (endTime - startTime) / 1e9
         println(s"(Iteration $sampIter): Assigning all termTopics takes: ${elapsed}s.")
 
         // Stage 2: calculate all docTopics, docLen, docGrp
         startTime = System.nanoTime
-        val totalDocSize = docRecs.length
         val docResults = new Array[(SparseVector[Int], Int, Int)](totalDocSize)
-        val sizePerThrd = {
-          val npt = totalDocSize / numThreads
-          if (npt * numThreads == totalDocSize) npt else npt + 1
-        }
-        val allDocVecs = Range(0, numThreads).map(thid => withFuture {
-          val posN = math.min(sizePerThrd * (thid + 1), totalDocSize)
-          var pos = sizePerThrd * thid
-          while (pos < posN) {
-            val DocRec(_, docGrp, docData) = docRecs(pos)
+        parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, _) => {
+          var di = ds
+          while (di < dn) {
+            val DocRec(_, docGrp, docData) = docRecs(di)
             val docTopics = SparseVector.zeros[Int](numTopics)
-            var i = 0
-            while (i < docData.length) {
-              var ind = docData(i)
+            var p = 0
+            while (p < docData.length) {
+              var ind = docData(p)
               if (ind >= 0) {
-                docTopics(docData(i + 1)) += 1
-                i += 2
+                docTopics(docData(p + 1)) += 1
+                p += 2
               } else {
-                i += 2
+                p += 2
                 while (ind < 0) {
-                  docTopics(docData(i)) += 1
-                  i += 1
+                  docTopics(docData(p)) += 1
+                  p += 1
                   ind += 1
                 }
               }
             }
             docTopics.compact()
-            docResults(pos) = (docTopics, sum(docTopics), docGrp.value & 0xFFFF)
-            pos += 1
+            docResults(di) = (docTopics, sum(docTopics), docGrp.value & 0xFFFF)
+            di += 1
           }
         })
-        withAwaitReady(Future.sequence(allDocVecs))
         endTime = System.nanoTime
         elapsed = (endTime - startTime) / 1e9
         println(s"(Iteration $sampIter): calculate all docTopics, docLen, docGrp takes: ${elapsed}s.")
@@ -105,21 +96,17 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
         // Stage 3: token sampling
         startTime = System.nanoTime
         val eta = params.eta
-        val mu = params.mu
-        val thq = new ConcurrentLinkedQueue(1 to numThreads)
         val gens = Array.tabulate(numThreads)(thid => new XORShiftRandom((newSeed + pid) * numThreads + thid))
         val decomps = Array.fill(numThreads)(new BVDecompressor(numTopics))
         val cdfDists = Array.fill(numThreads)(new CumulativeDist[Double]().reset(numTopics))
         val GlobalVars(piGK, nK, dG) = globalVarsBc.value
         val egDists = resetDists_egDenses(piGK, eta)
-        val allSampling = termRecs.iterator.map(termRec => withFuture {
-          val thid = thq.poll() - 1
-          try {
-            val gen = gens(thid)
-            val decomp = decomps(thid)
-            val cdfDist = cdfDists(thid)
-            val totalSamp = new CompositeSampler()
-
+        parallelized_foreachBatch(termRecs.iterator, numThreads, 5, (batch, _, thid) => {
+          val gen = gens(thid)
+          val decomp = decomps(thid)
+          val cdfDist = cdfDists(thid)
+          val totalSamp = new CompositeSampler()
+          batch.foreach { termRec =>
             val TermRec(termId, termData) = termRec
             val termTopics = decomp.CV2BV(termVecs(termId))
             val denseTermTopics = getDensed(termTopics)
@@ -127,12 +114,12 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
             val resetDist_tegSparse_f = resetDist_tegSparse(piGK, nK, termTopics, denseTermTopics, eta) _
             val resetDist_dtmSparse_f = resetDist_dtmSparse(nK, denseTermTopics) _
             val resetDist_dtmSparse_wAdj_f = resetDist_dtmSparse_wAdj(nK, denseTermTopics) _
-            var i = 0
-            while (i < termData.length) {
-              val docPos = termData(i)
-              var docI = termData(i + 1)
-              val docData = docRecs(docPos).docData
-              val (docTopics, docLen, g) = docResults(docPos)
+            var p = 0
+            while (p < termData.length) {
+              val di = termData(p)
+              var q = termData(p + 1)
+              val docData = docRecs(di).docData
+              val (docTopics, docLen, g) = docResults(di)
               val tegDist = {
                 var dist = tegDists(g)
                 if (dist == null) {
@@ -141,29 +128,26 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
                 }
                 dist
               }
-              var ind = docData(docI)
+              var ind = docData(q)
               if (ind >= 0) {
-                val topic = docData(docI + 1)
+                val topic = docData(q + 1)
                 resetDist_dtmSparse_wAdj_f(cdfDist, docTopics, docLen, muSig, topic)
                 totalSamp.resetComponents(cdfDist, tegDist, scaleSamp)
-                docData(docI + 1) = totalSamp.resampleRandom(gen, topic)
+                docData(q + 1) = totalSamp.resampleRandom(gen, topic)
               } else {
                 resetDist_dtmSparse_f(cdfDist, docTopics, docLen, muSig)
                 totalSamp.resetComponents(cdfDist, tegDist, egDists(g))
-                docI += 2
+                q += 2
                 while (ind < 0) {
-                  docData(docI) = totalSamp.resampleRandom(gen, docData(docI))
-                  docI += 1
+                  docData(q) = totalSamp.resampleRandom(gen, docData(q))
+                  q += 1
                   ind += 1
                 }
               }
-              i += 2
+              p += 2
             }
-          } finally {
-            thq.add(thid + 1)
           }
         })
-        withAwaitReady(Future.sequence(allSampling))
         endTime = System.nanoTime
         elapsed = (endTime - startTime) / 1e9
         println(s"(Iteration $sampIter): Sampling tokens takes: ${elapsed}s.")
@@ -172,46 +156,39 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
         startTime = System.nanoTime
         val samps = Array.fill(numThreads)(new CumulativeDist[Float]().reset(numGroups))
         val priors = log(convert(dG, Float) :+= 1f)
-        val allGrouping = Range(0, numThreads).map(thid => Future {
-          val thid = thq.poll() - 1
-          try {
-            val gen = gens(thid)
-            val samp = samps(thid)
-            val posN = math.min(sizePerThrd * (thid + 1), totalDocSize)
-            var pos = sizePerThrd * thid
-            while (pos < posN) {
-              val docGrp = docRecs(pos).docGrp
-              if (docGrp.value < 0x10000) {
-                val docData = docRecs(pos).docData
-                val llhs = priors.copy
-                var i = 0
-                while (i < docData.length) {
-                  var ind = docData(i)
-                  if (ind >= 0) {
-                    i += 2
-                  } else {
-                    i += 2
-                    while (ind < 0) {
-                      i += 1
-                      ind += 1
-                    }
+        parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, thid) => {
+          val gen = gens(thid)
+          val samp = samps(thid)
+          var di = ds
+          while (di < dn) {
+            val docGrp = docRecs(di).docGrp
+            if (docGrp.value < 0x10000) {
+              val docData = docRecs(di).docData
+              val llhs = priors.copy
+              var p = 0
+              while (p < docData.length) {
+                var ind = docData(p)
+                if (ind >= 0) {
+                  p += 2
+                } else {
+                  p += 2
+                  while (ind < 0) {
+                    p += 1
+                    ind += 1
                   }
                 }
-                val ng = if (sampIter <= burninIter) {
-                  llhs :-= max(llhs)
-                  samp.resetDist(exp(llhs).iterator, numGroups).sampleRandom(gen)
-                } else {
-                  argmax(llhs)
-                }
-                docGrp.value = ng
               }
-              pos += 1
+              val ng = if (sampIter <= burninIter) {
+                llhs :-= max(llhs)
+                samp.resetDist(exp(llhs).iterator, numGroups).sampleRandom(gen)
+              } else {
+                argmax(llhs)
+              }
+              docGrp.value = ng
             }
-          } finally {
-            thq.add(thid + 1)
+            di += 1
           }
-        })
-        withAwaitReadyAndClose(Future.sequence(allGrouping))
+        }, closing=true)
         endTime = System.nanoTime
         elapsed = (endTime - startTime) / 1e9
         println(s"(Iteration $sampIter): Grouping docs takes: ${elapsed}s.")
@@ -332,8 +309,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     paraBlocks: RDD[(Int, ParaBlock)]): RDD[(Int, ParaBlock)] = {
     val dscp = numTopics >>> 3
     val shippeds = dataBlocks.mapPartitions(_.flatMap { case (_, DataBlock(termRecs, docRecs)) =>
-      implicit val es = initExecutionContext(numThreads)
-      val allAgg = termRecs.iterator.map(termRec => withFuture {
+      parallelized_mapElement(termRecs.iterator, numThreads, termRec => {
         val TermRec(termId, termData) = termRec
         val termTopics = SparseVector.zeros[Int](numTopics)
         var i = 0
@@ -355,20 +331,19 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
           i += 2
         }
         (termId, termTopics)
-      })
-      withAwaitResultAndClose(Future.sequence(allAgg))
+      }, closing=true)(initExecutionContext(numThreads))
     }).partitionBy(paraBlocks.partitioner.get)
 
     // Below identical map is used to isolate the impact of locality of CheckpointRDD
     val isoRDD = paraBlocks.mapPartitions(_.seq, preservesPartitioning=true)
     isoRDD.zipPartitions(shippeds, preservesPartitioning=true)((paraIter, shpsIter) =>
       paraIter.map { case (pid, ParaBlock(routes, index, attrs)) =>
-        val totalSize = attrs.length
-        val results = new Array[Vector[Int]](totalSize)
-        val marks = new AtomicIntegerArray(totalSize)
-
+        val totalTermSize = attrs.length
+        val results = new Array[Vector[Int]](totalTermSize)
+        val marks = new AtomicIntegerArray(totalTermSize)
         implicit val es = initExecutionContext(numThreads)
-        val allAgg = shpsIter.grouped(numThreads * 5).map(batch => withFuture {
+
+        parallelized_foreachBatch(shpsIter, numThreads, numThreads * 5, (batch, _, _) => {
           batch.foreach { case (termId, termTopics) =>
             val i = index(termId)
             if (marks.getAndDecrement(i) == 0) {
@@ -385,22 +360,15 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
             marks.set(i, Int.MaxValue)
           }
         })
-        withAwaitReady(Future.sequence(allAgg))
 
-        val sizePerthrd = {
-          val npt = totalSize / numThreads
-          if (npt * numThreads == totalSize) npt else npt + 1
-        }
-        val allComp = Range(0, numThreads).map(thid => withFuture {
+        parallelized_foreachSplit(totalTermSize, numThreads, (ts, tn, _) => {
           val comp = new BVCompressor(numTopics)
-          val posN = math.min(sizePerthrd * (thid + 1), totalSize)
-          var pos = sizePerthrd * thid
-          while (pos < posN) {
-            attrs(pos) = comp.BV2CV(results(pos))
-            pos += 1
+          var ti = ts
+          while (ti < tn) {
+            attrs(ti) = comp.BV2CV(results(ti))
+            ti += 1
           }
-        })
-        withAwaitResultAndClose(Future.sequence(allComp))
+        }, closing=true)
 
         (pid, ParaBlock(routes, index, attrs))
       }
@@ -410,63 +378,39 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
   def collectGlobalVariables(dataBlocks: RDD[(Int, DataBlock)],
     params: HyperParams,
     numTerms: Int): GlobalVars = {
-    val (nGK, nGW, dG) = dataBlocks.mapPartitions(_.map { case (_, DataBlock(termRecs, docRecs)) =>
-      val totalDocSize = docRecs.length
+    type Pair = (DenseMatrix[Int], DenseVector[Long])
+    val reducer: (Pair, Pair) => Pair = (a, b) => (a._1 :+= b._1, a._2 :+= b._2)
+    val (nGK, dG) = dataBlocks.mapPartitions(_.map { dbp =>
+      val docRecs = dbp._2.DocRecs
 
-      val docGrps = new Array[Int](totalDocSize)
-      val sizePerThrd = {
-        val npt = totalDocSize / numThreads
-        if (npt * numThreads == totalDocSize) npt else npt + 1
-      }
-      implicit val es = initExecutionContext(numThreads)
-      val allNGK = Range(0, numThreads).map(thid => withFuture {
+      parallelized_reduceSplit(docRecs.length, numThreads, (ds, dn) => {
         val nGKThrd = DenseMatrix.zeros[Int](numGroups, numTopics)
         val dGThrd = DenseVector.zeros[Long](numGroups)
-        val posN = math.min(sizePerThrd * (thid + 1), totalDocSize)
-        var pos = sizePerThrd * thid
-        while (pos < posN) {
-          val DocRec(_, docGrp, docData) = docRecs(pos)
+        var di = ds
+        while (di < dn) {
+          val DocRec(_, docGrp, docData) = docRecs(di)
           val g = docGrp.value & 0xFFFF
-          docGrps(pos) = g
-          var i = 0
-          while (i < docData.length) {
-            var ind = docData(i)
+          var p = 0
+          while (p < docData.length) {
+            var ind = docData(p)
             if (ind >= 0) {
-              nGKThrd(g, docData(i + 1)) += 1
-              i += 2
+              nGKThrd(g, docData(p + 1)) += 1
+              p += 2
             } else {
-              i += 2
+              p += 2
               while (ind < 0) {
-                nGKThrd(g, docData(i)) += 1
-                i += 1
+                nGKThrd(g, docData(p)) += 1
+                p += 1
                 ind += 1
               }
             }
           }
           dGThrd(g) += 1
-          pos += 1
+          di += 1
         }
         (nGKThrd, dGThrd)
-      })
-      val (nGKLc, dGLc) = withAwaitResult(Future.reduce(allNGK)((a, b) => (a._1 :+= b._1, a._2 :+= b._2)))
-
-      val nGWLc = DenseMatrix.zeros[Int](numGroups, numTerms)
-      val allNGW = termRecs.iterator.map(termRec => withFuture {
-        val TermRec(termId, termData) = termRec
-        var i = 0
-        while (i < termData.length) {
-          val docPos = termData(i)
-          val docData = docRecs(docPos).docData
-          val g = docGrps(docPos)
-          val ind = docData(termData(i + 1))
-          val termCnt = if (ind >= 0) 1 else -ind
-          nGWLc(g, termId) += termCnt
-          i += 2
-        }
-      })
-      withAwaitReadyAndClose(Future.sequence(allNGW))
-      (nGKLc, nGWLc, dGLc)
-    }).collect().par.reduce((a, b) => (a._1 :+= b._1, a._2 :+= b._2, a._3 :+= b._3))
+      }, reducer, closing=true)(initExecutionContext(numThreads))
+    }).treeReduce(reducer)
 
     val nG = Range(0, numGroups).par.map(g => sum(convert(nGK(g, ::).t, Long))).toArray
     val nK = Range(0, numTopics).par.map(k => sum(nGK(::, k))).toArray
@@ -475,28 +419,20 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     Range(0, numGroups).par.foreach { g =>
       val piGKDenom = 1f / (nG(g) + alpha * numTopics)
       for (k <- 0 until numTopics) {
-        val ngk = nGK(g, k)
-        piGK(g, k) = (ngk + alpha) * piGKDenom
+        piGK(g, k) = (nGK(g, k) + alpha) * piGKDenom
       }
     }
-    GlobalVars(piGK, sigGW, nK, dG)
+    GlobalVars(piGK, nK, dG)
   }
 
   def ShipParaBlocks(dataBlocks: RDD[(Int, DataBlock)],
     paraBlocks: RDD[(Int, ParaBlock)]): RDD[(Int, ShippedAttrsBlock)] = {
     paraBlocks.mapPartitions(_.flatMap { case (_, ParaBlock(routes, index, attrs)) =>
-      implicit val es = initExecutionContext(numThreads)
-      routes.indices.grouped(numThreads).flatMap { batch =>
-        val all = Future.traverse(batch)(pid => withFuture {
-          val termIds = routes(pid)
-          val termAttrs = termIds.map(termId => attrs(index(termId)))
-          (pid, ShippedAttrsBlock(termIds, termAttrs))
-        })
-        withAwaitResult(all)
-      } ++ {
-        closeExecutionContext(es)
-        Iterator.empty
-      }
+      parallelized_mapBatch(routes.indices.iterator, numThreads, pid => {
+        val termIds = routes(pid)
+        val termAttrs = termIds.map(termId => attrs(index(termId)))
+        (pid, ShippedAttrsBlock(termIds, termAttrs))
+      }, closing=true)(initExecutionContext(numThreads))
     }).partitionBy(dataBlocks.partitioner.get)
   }
 }

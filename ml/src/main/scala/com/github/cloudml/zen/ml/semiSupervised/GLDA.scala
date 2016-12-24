@@ -186,9 +186,9 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
   def toGLDAModel: DistributedGLDAModel = {
     val termTopicsRDD = paraBlocks.mapPartitions(_.flatMap { case (_, ParaBlock(_, index, attrs)) =>
       val totalTermSize = attrs.length
-
       val results = new Array[Vector[Int]](totalTermSize)
-      parallelized_foreachThread(totalTermSize, numThreads, (ts, tn) => {
+
+      parallelized_foreachSplit(totalTermSize, numThreads, (ts, tn, _) => {
         val decomp = new BVDecompressor(numTopics)
         var ti = ts
         while (ti < tn) {
@@ -221,7 +221,7 @@ object GLDA {
     val numTokens = dataBlocks.mapPartitions(_.map { dbp =>
       val docRecs = dbp._2.DocRecs
 
-      parallelized_reduceByThread[Long](docRecs.length, numThreads, (ds, dn) => {
+      parallelized_reduceSplit[Long](docRecs.length, numThreads, (ds, dn) => {
         var numTokensThrd = 0L
         var di = ds
         while (di < dn) {
@@ -279,8 +279,8 @@ object GLDA {
       val totalDocSize = docs.length
       val docBows = new Array[DocBow](totalDocSize)
 
-      parallelized_foreachThread(totalDocSize, numThreads, (ds, dn) => {
-        val gen = new XORShiftRandom()
+      parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, thid) => {
+        val gen = new XORShiftRandom(System.nanoTime * numThreads + thid)
         var di = ds
         while (di < dn) {
           val fields = docs(di).split(raw"\t|\s+").view
@@ -316,12 +316,12 @@ object GLDA {
     bowDocsRDD.mapPartitionsWithIndex { (pid, iter) =>
       val docs = iter.toArray
       val totalDocSize = docs.length
-
       val docRecs = new Array[DocRec](totalDocSize)
       val termSet = new TrieMap[Int, Int]()
       implicit val es = initExecutionContext(numThreads)
-      parallelized_foreachThread(totalDocSize, numThreads, (ds, dn) => {
-        val gen = new XORShiftRandom()
+
+      parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, thid) => {
+        val gen = new XORShiftRandom(System.nanoTime * numThreads + thid)
         var di = ds
         while (di < dn) {
           val DocBow(docId, docGrp, docTerms) = docs(di)
@@ -356,7 +356,7 @@ object GLDA {
         g2l(termId) = localIdx
       }
 
-      parallelized_foreachThread(totalDocSize, numThreads, (ds, dn) => {
+      parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, _) => {
         var di = ds
         while (di < dn) {
           val docData = docRecs(di).docData
