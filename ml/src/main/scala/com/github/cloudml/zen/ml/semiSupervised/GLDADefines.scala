@@ -25,7 +25,7 @@ import scala.collection.mutable
 
 
 object GLDADefines {
-  case class HyperParams(var alpha: Float, var beta: Float, var eta: Float, var mu: Float)
+  case class HyperParams(var eta: Float, var mu: Float, var alpha: Float)
 
   case class IntWrapper(var value: Int)
   case class DocBow(docId: Long, docGrp: Int, docTerms: SparseVector[Int])
@@ -34,8 +34,7 @@ object GLDADefines {
   case class DataBlock(termRecs: Array[TermRec], DocRecs: Array[DocRec])
   case class ParaBlock(routes: Array[Array[Int]], index: mutable.HashMap[Int, Int], attrs: Array[CompressedVector])
   case class ShippedAttrsBlock(termIds: Array[Int], termAttrs: Array[CompressedVector])
-  case class GlobalVars(piGK: DenseMatrix[Float], sigGW: DenseMatrix[Float], nK: Array[Int], dG: DenseVector[Long])
-  case class ExtraVars(lnPiGK: DenseMatrix[Float], lnSigGW: DenseMatrix[Float])
+  case class GlobalVars(piGK: DenseMatrix[Float], nK: Array[Int], dG: DenseVector[Long])
 
   type OptionMap = Map[String, String]
 

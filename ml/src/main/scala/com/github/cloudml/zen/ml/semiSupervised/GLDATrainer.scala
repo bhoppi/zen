@@ -39,7 +39,6 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
   def SampleNGroup(dataBlocks: RDD[(Int, DataBlock)],
     shippeds: RDD[(Int, ShippedAttrsBlock)],
     globalVarsBc: Broadcast[GlobalVars],
-    extraVarsBc: Broadcast[ExtraVars],
     params: HyperParams,
     seed: Int,
     sampIter: Int,
@@ -111,7 +110,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
         val gens = Array.tabulate(numThreads)(thid => new XORShiftRandom((newSeed + pid) * numThreads + thid))
         val decomps = Array.fill(numThreads)(new BVDecompressor(numTopics))
         val cdfDists = Array.fill(numThreads)(new CumulativeDist[Double]().reset(numTopics))
-        val GlobalVars(piGK, sigGW, nK, dG) = globalVarsBc.value
+        val GlobalVars(piGK, nK, dG) = globalVarsBc.value
         val egDists = resetDists_egDenses(piGK, eta)
         val allSampling = termRecs.iterator.map(termRec => withFuture {
           val thid = thq.poll() - 1
@@ -119,7 +118,6 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
             val gen = gens(thid)
             val decomp = decomps(thid)
             val cdfDist = cdfDists(thid)
-            val scaleSamp = new ScalingSampler()
             val totalSamp = new CompositeSampler()
 
             val TermRec(termId, termData) = termRec
@@ -143,8 +141,6 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
                 }
                 dist
               }
-              val muSig = mu * sigGW(g, termId)
-              scaleSamp.resetScaling(muSig, egDists(g))
               var ind = docData(docI)
               if (ind >= 0) {
                 val topic = docData(docI + 1)
@@ -153,7 +149,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
                 docData(docI + 1) = totalSamp.resampleRandom(gen, topic)
               } else {
                 resetDist_dtmSparse_f(cdfDist, docTopics, docLen, muSig)
-                totalSamp.resetComponents(cdfDist, tegDist, scaleSamp)
+                totalSamp.resetComponents(cdfDist, tegDist, egDists(g))
                 docI += 2
                 while (ind < 0) {
                   docData(docI) = totalSamp.resampleRandom(gen, docData(docI))
@@ -176,7 +172,6 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
         startTime = System.nanoTime
         val samps = Array.fill(numThreads)(new CumulativeDist[Float]().reset(numGroups))
         val priors = log(convert(dG, Float) :+= 1f)
-        val ExtraVars(lnPiGK, lnSigGW) = extraVarsBc.value
         val allGrouping = Range(0, numThreads).map(thid => Future {
           val thid = thq.poll() - 1
           try {
@@ -193,14 +188,10 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
                 while (i < docData.length) {
                   var ind = docData(i)
                   if (ind >= 0) {
-                    llhs :+= lnSigGW(::, ind)
-                    llhs :+= lnPiGK(::, docData(i + 1))
                     i += 2
                   } else {
-                    llhs :+= lnSigGW(::, docData(i + 1)) :* -ind.toFloat
                     i += 2
                     while (ind < 0) {
-                      llhs :+= lnPiGK(::, docData(i))
                       i += 1
                       ind += 1
                     }
@@ -480,18 +471,12 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     val nG = Range(0, numGroups).par.map(g => sum(convert(nGK(g, ::).t, Long))).toArray
     val nK = Range(0, numTopics).par.map(k => sum(nGK(::, k))).toArray
     val alpha = params.alpha
-    val beta = params.beta
     val piGK = DenseMatrix.zeros[Float](numGroups, numTopics)
-    val sigGW = DenseMatrix.zeros[Float](numGroups, numTerms)
     Range(0, numGroups).par.foreach { g =>
       val piGKDenom = 1f / (nG(g) + alpha * numTopics)
-      val sigGWDenom = 1f / (nG(g) + beta * numTerms)
       for (k <- 0 until numTopics) {
         val ngk = nGK(g, k)
         piGK(g, k) = (ngk + alpha) * piGKDenom
-      }
-      for (w <- 0 until numTerms) {
-        sigGW(g, w) = (nGW(g, w) + beta) * sigGWDenom
       }
     }
     GlobalVars(piGK, sigGW, nK, dG)

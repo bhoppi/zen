@@ -35,18 +35,17 @@ object GLDADriver {
 
     val numTopics = options("numtopics").toInt
     val numGroups = options("numgroups").toInt
-    val alpha = options("alpha").toFloat
-    val beta = options("beta").toFloat
     val eta = options("eta").toFloat
     val mu = options("mu").toFloat
+    val alpha = options("alpha").toFloat
     val totalIter = options("totaliter").toInt
     val numPartitions = options("numpartitions").toInt
     assert(numTopics > 0, "numTopics must be greater than 0")
     assert(numGroups > 0, "numGroups must be greater than 0")
-    assert(alpha > 0f && beta > 0f && eta > 0f && mu > 0f)
+    assert(eta > 0f && mu > 0f && alpha > 0f)
     assert(totalIter > 0, "totalIter must be greater than 0")
     assert(numPartitions > 0, "numPartitions must be greater than 0")
-    val params = HyperParams(alpha, beta, eta, mu)
+    val params = HyperParams(eta, mu, alpha)
 
     val inputPath = options("inputpath")
     val outputPath = options("outputpath")
@@ -88,7 +87,7 @@ object GLDADriver {
       println("start GLDA training")
       println(s"appId: ${sc.applicationId}")
       println(s"numTopics = $numTopics, numGroups = $numGroups, totalIteration = $totalIter")
-      println(s"alpha = $alpha, beta = $beta, eta = $eta, mu = $mu")
+      println(s"eta = $eta, mu = $mu, alpha = $alpha")
       println(s"inputDataPath = $inputPath")
       println(s"outputPath = $outputPath")
 
@@ -143,7 +142,7 @@ object GLDADriver {
 
   def parseArgs(args: Array[String]): OptionMap = {
     val usage = "Usage: GLDADriver <Args> [Options] <Input path> <Output path>\n" +
-      "  Args: -numTopics=<Int> -numGroups=<Int> -alpha=<Float> -beta=<Float> -eta=<Float> -mu=<Float>\n" +
+      "  Args: -numTopics=<Int> -numGroups=<Int> -eta=<Float> -mu=<Float> -alpha=<Float>\n" +
       "        -totalIter=<Int> -numPartitions=<Int>\n" +
       "  Options: -numThreads=<Int(*1)>\n" +
       "           -burninIter=<Int(*10)>\n" +
@@ -155,7 +154,7 @@ object GLDADriver {
       "           -labelsRate=<Float(*1.0)>\n" +
       "           -storageLevel=<StorageLevel(*MEMORY_AND_DISK)>\n" +
       "           -useKryo=<true|*false>"
-    if (args.length < 10) {
+    if (args.length < 9) {
       println(usage)
       System.exit(1)
     }

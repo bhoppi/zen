@@ -21,7 +21,6 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentLinkedQueue
 
 import breeze.linalg._
-import breeze.numerics._
 import com.github.cloudml.zen.ml.semiSupervised.GLDADefines._
 import com.github.cloudml.zen.ml.util.Concurrent._
 import com.github.cloudml.zen.ml.util._
@@ -34,7 +33,6 @@ import org.apache.spark.storage.StorageLevel
 import scala.collection.JavaConverters._
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
-import scala.concurrent.Future
 
 
 class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
@@ -50,7 +48,6 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
   var storageLevel: StorageLevel) extends Serializable {
 
   @transient var globalVarsBc: Broadcast[GlobalVars] = _
-  @transient var extraVarsBc: Broadcast[ExtraVars] = _
   @transient lazy val seed = new XORShiftRandom().nextInt()
   @transient var dataCpFile: String = _
   @transient var paraCpFile: String = _
@@ -74,7 +71,8 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
     val saveIntv = scConf.get(cs_saveInterval).toInt
     if (toEval) {
       println("Before Gibbs sampling:")
-      globalVarsBc = scContext.broadcast(algo.collectGlobalVariables(dataBlocks, params, numTerms))
+      val globalVars = algo.collectGlobalVariables(dataBlocks, params, numTerms)
+      globalVarsBc = scContext.broadcast(globalVars)
       GLDAMetrics(this, evalMetrics).foreach(_.output(println))
       globalVarsBc.unpersist(blocking=false)
     }
@@ -87,16 +85,15 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
       val needChkpt = canChkpt && iter % chkptIntv == 1
 
       val globalVars = algo.collectGlobalVariables(dataBlocks, params, numTerms)
-      val GlobalVars(piGK, sigGW, nK, dG) = globalVars
-      assert(sum(convert(nK, Long)) == numTokens && sum(dG) == numDocs)
+      val countTok = sum(convert(globalVars.nK, Long))
+      val countDoc = sum(globalVars.dG)
+      assert(countTok == numTokens && countDoc == numDocs, s"countTok=$countTok, countDoc=$countDoc")
       globalVarsBc = scContext.broadcast(globalVars)
-      extraVarsBc = scContext.broadcast(calcExtraVars(piGK, sigGW))
       fitIteration(iter, burninIter, needChkpt)
       if (toEval) {
         GLDAMetrics(this, evalMetrics).foreach(_.output(println))
       }
       globalVarsBc.unpersist(blocking=false)
-      extraVarsBc.unpersist(blocking=false)
 
       if (saveIntv > 0 && iter % saveIntv == 0 && iter < totalIter) {
         val model = toGLDAModel
@@ -114,8 +111,8 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
   def fitIteration(sampIter: Int, burninIter: Int, needChkpt: Boolean): Unit = {
     val startedAt = System.nanoTime
     val shippeds = algo.ShipParaBlocks(dataBlocks, paraBlocks)
-    val newDataBlocks = algo.SampleNGroup(dataBlocks, shippeds, globalVarsBc, extraVarsBc, params,
-      seed, sampIter, burninIter)
+    val newDataBlocks = algo.SampleNGroup(dataBlocks, shippeds, globalVarsBc, params, seed,
+      sampIter, burninIter)
     newDataBlocks.persist(storageLevel).setName(s"DataBlocks-$sampIter")
     if (needChkpt) {
       newDataBlocks.checkpoint()
@@ -145,16 +142,6 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
     println(s"Sampling & grouping & updating paras $sampIter takes: $elapsedSeconds secs")
   }
 
-  def calcExtraVars(piGK: DenseMatrix[Float], sigGW: DenseMatrix[Float]): ExtraVars = {
-    val lnPiGK = DenseMatrix.zeros[Float](numGroups, numTopics)
-    val lnSigGW = DenseMatrix.zeros[Float](numGroups, numTopics)
-    Range(0, numGroups).par.foreach { g =>
-      lnPiGK(g, ::) := log(piGK(g, ::))
-      lnSigGW(g, ::) := log(sigGW(g, ::))
-    }
-    ExtraVars(lnPiGK, lnSigGW)
-  }
-
   def saveDocModel(): Unit = {
     val saveAsSolid = scConf.get(cs_saveAsSolid).toBoolean
     val outputPath = scConf.get(cs_outputpath)
@@ -164,17 +151,17 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
     fs.delete(docSavePath, true)
     dataBlocks.mapPartitions(_.flatMap(_._2.DocRecs.iterator.map { case DocRec(docId, docGrp, docData) =>
       val docTopics = SparseVector.zeros[Int](numTopics)
-      var i = 0
-      while (i < docData.length) {
-        var ind = docData(i)
+      var p = 0
+      while (p < docData.length) {
+        var ind = docData(p)
         if (ind >= 0) {
-          docTopics(docData(i + 1)) += 1
-          i += 2
+          docTopics(docData(p + 1)) += 1
+          p += 2
         } else {
-          i += 2
+          p += 2
           while (ind < 0) {
-            docTopics(docData(i)) += 1
-            i += 1
+            docTopics(docData(p)) += 1
+            p += 1
             ind += 1
           }
         }
@@ -197,24 +184,18 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
   }
 
   def toGLDAModel: DistributedGLDAModel = {
-    val termTopicsRDD = paraBlocks.mapPartitions(_.flatMap { case (_, ParaBlock(routes, index, attrs)) =>
-      val totalSize = attrs.length
-      val results = new Array[Vector[Int]](totalSize)
-      val sizePerthrd = {
-        val npt = totalSize / numThreads
-        if (npt * numThreads == totalSize) npt else npt + 1
-      }
-      implicit val es = initExecutionContext(numThreads)
-      val allDecomp = Range(0, numThreads).map(thid => withFuture {
+    val termTopicsRDD = paraBlocks.mapPartitions(_.flatMap { case (_, ParaBlock(_, index, attrs)) =>
+      val totalTermSize = attrs.length
+
+      val results = new Array[Vector[Int]](totalTermSize)
+      parallelized_foreachThread(totalTermSize, numThreads, (ts, tn) => {
         val decomp = new BVDecompressor(numTopics)
-        val posN = math.min(sizePerthrd * (thid + 1), totalSize)
-        var pos = sizePerthrd * thid
-        while (pos < posN) {
-          results(pos) = decomp.CV2BV(attrs(pos))
-          pos += 1
+        var ti = ts
+        while (ti < tn) {
+          results(ti) = decomp.CV2BV(attrs(ti))
+          ti += 1
         }
-      })
-      withAwaitReadyAndClose(Future.sequence(allDecomp))
+      }, closing=true)(initExecutionContext(numThreads))
 
       index.iterator.map { case (termId, termIdx) => (termId, results(termIdx)) }
     }, preservesPartitioning=true)
@@ -239,34 +220,27 @@ object GLDA {
 
     val numTokens = dataBlocks.mapPartitions(_.map { dbp =>
       val docRecs = dbp._2.DocRecs
-      val totalDocSize = docRecs.length
-      val sizePerThrd = {
-        val npt = totalDocSize / numThreads
-        if (npt * numThreads == totalDocSize) npt else npt + 1
-      }
-      implicit val es = initExecutionContext(numThreads)
-      val allToken = Range(0, numThreads).map(thid => withFuture {
+
+      parallelized_reduceByThread[Long](docRecs.length, numThreads, (ds, dn) => {
         var numTokensThrd = 0L
-        val posN = math.min(sizePerThrd * (thid + 1), totalDocSize)
-        var pos = sizePerThrd * thid
-        while (pos < posN) {
-          val docData = docRecs(pos).docData
-          var i = 0
-          while (i < docData.length) {
-            val ind = docData(i)
+        var di = ds
+        while (di < dn) {
+          val docData = docRecs(di).docData
+          var p = 0
+          while (p < docData.length) {
+            val ind = docData(p)
             if (ind >= 0) {
               numTokensThrd += 1
-              i += 2
+              p += 2
             } else {
               numTokensThrd += -ind
-              i += 2 - ind
+              p += 2 - ind
             }
           }
-          pos += 1
+          di += 1
         }
         numTokensThrd
-      })
-      withAwaitResultAndClose(Future.reduce(allToken)(_ + _))
+      }, _ + _, closing=true)(initExecutionContext(numThreads))
     }).reduce(_ + _)
     println(s"tokens in the corpus: $numTokens")
 
@@ -303,20 +277,13 @@ object GLDA {
     rawDocsRDD.mapPartitions { iter =>
       val docs = iter.toArray
       val totalDocSize = docs.length
-
       val docBows = new Array[DocBow](totalDocSize)
-      val sizePerThrd = {
-        val npt = totalDocSize / numThreads
-        if (npt * numThreads == totalDocSize) npt else npt + 1
-      }
-      implicit val es = initExecutionContext(numThreads)
-      val allParsing = Range(0, numThreads).map(thid => withFuture {
-        val gen = new XORShiftRandom(System.nanoTime * numThreads + thid)
-        val posN = math.min(sizePerThrd * (thid + 1), totalDocSize)
-        var pos = sizePerThrd * thid
-        while (pos < posN) {
-          val line = docs(pos)
-          val fields = line.split(raw"\t|\s+").view
+
+      parallelized_foreachThread(totalDocSize, numThreads, (ds, dn) => {
+        val gen = new XORShiftRandom()
+        var di = ds
+        while (di < dn) {
+          val fields = docs(di).split(raw"\t|\s+").view
           val docInfo = fields.head.split(":")
           val docId = docInfo(0).toLong
           val docGrp = if (docInfo.length > 1 && gen.nextFloat() < labelsRate) {
@@ -324,7 +291,7 @@ object GLDA {
           } else {
             gen.nextInt(numGroups)
           }
-          val docTerms = SparseVector.zeros[Int](Int.MaxValue)
+          val docTerms = SparseVector.zeros[Int](65535)
           fields.tail.foreach { field =>
             val pair = field.split(":")
             val termId = pair(0).toInt
@@ -333,11 +300,10 @@ object GLDA {
               docTerms(termId) += termCnt
             }
           }
-          docBows(pos) = DocBow(docId, docGrp, docTerms)
-          pos += 1
+          docBows(di) = DocBow(docId, docGrp, docTerms)
+          di += 1
         }
-      })
-      withAwaitReadyAndClose(Future.sequence(allParsing))
+      }, closing=true)(initExecutionContext(numThreads))
 
       docBows.iterator
     }
@@ -352,18 +318,13 @@ object GLDA {
       val totalDocSize = docs.length
 
       val docRecs = new Array[DocRec](totalDocSize)
-      val termSet = new TrieMap[Int, Null]()
-      val sizePerThrd = {
-        val npt = totalDocSize / numThreads
-        if (npt * numThreads == totalDocSize) npt else npt + 1
-      }
+      val termSet = new TrieMap[Int, Int]()
       implicit val es = initExecutionContext(numThreads)
-      val allConv = Range(0, numThreads).map(thid => withFuture {
-        val gen = new XORShiftRandom(System.nanoTime * numThreads + thid)
-        val posN = math.min(sizePerThrd * (thid + 1), totalDocSize)
-        var pos = sizePerThrd * thid
-        while (pos < posN) {
-          val DocBow(docId, docGrp, docTerms) = docs(pos)
+      parallelized_foreachThread(totalDocSize, numThreads, (ds, dn) => {
+        val gen = new XORShiftRandom()
+        var di = ds
+        while (di < dn) {
+          val DocBow(docId, docGrp, docTerms) = docs(di)
           val docData = new mutable.ArrayBuffer[Int]()
           docTerms.activeIterator.foreach { case (termId, termCnt) =>
             if (termCnt == 1) {
@@ -378,13 +339,12 @@ object GLDA {
                 c += 1
               }
             }
-            termSet.putIfAbsent(termId, null)
+            termSet.putIfAbsent(termId, 1)
           }
-          docRecs(pos) = DocRec(docId, IntWrapper(docGrp), docData.toArray)
-          pos += 1
+          docRecs(di) = DocRec(docId, IntWrapper(docGrp), docData.toArray)
+          di += 1
         }
       })
-      withAwaitReady(Future.sequence(allConv))
 
       val localTerms = termSet.keys.toArray
       val numLocalTerms = localTerms.length
@@ -395,34 +355,33 @@ object GLDA {
         l2g(localIdx) = termId
         g2l(termId) = localIdx
       }
-      val allInvIdx = Range(0, numThreads).map(thid => withFuture {
-        val posN = math.min(sizePerThrd * (thid + 1), totalDocSize)
-        var pos = sizePerThrd * thid
-        while (pos < posN) {
-          val docData = docRecs(pos).docData
-          var i = 0
-          while (i < docData.length) {
-            val ind = docData(i)
+
+      parallelized_foreachThread(totalDocSize, numThreads, (ds, dn) => {
+        var di = ds
+        while (di < dn) {
+          val docData = docRecs(di).docData
+          var p = 0
+          while (p < docData.length) {
+            val ind = docData(p)
             if (ind >= 0) {
               val termIdx = g2l(ind)
-              docData(i) = termIdx
-              tqs(termIdx).add((pos, i))
-              i += 2
+              docData(p) = termIdx
+              tqs(termIdx).add((di, p))
+              p += 2
             } else {
-              val termIdx = g2l(docData(i + 1))
-              docData(i + 1) = termIdx
-              tqs(termIdx).add((pos, i))
-              i += 2 - ind
+              val termIdx = g2l(docData(p + 1))
+              docData(p + 1) = termIdx
+              tqs(termIdx).add((di, p))
+              p += 2 - ind
             }
           }
-          pos += 1
+          di += 1
         }
-      })
-      withAwaitReadyAndClose(Future.sequence(allInvIdx))
+      }, closing=true)
 
       val termRecs = new Array[TermRec](numLocalTerms)
-      Range(0, numLocalTerms).par.foreach { li =>
-        termRecs(li) = TermRec(l2g(li), tqs(li).asScala.flatMap(t => Iterator(t._1, t._2)).toArray)
+      Range(0, numLocalTerms).par.foreach { i =>
+        termRecs(i) = TermRec(l2g(i), tqs(i).asScala.flatMap(t => Iterator(t._1, t._2)).toArray)
       }
       Iterator.single((pid, DataBlock(termRecs, docRecs)))
     }.partitionBy(new HashPartitioner(numParts))

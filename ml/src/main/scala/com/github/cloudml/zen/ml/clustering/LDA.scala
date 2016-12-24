@@ -19,7 +19,7 @@ package com.github.cloudml.zen.ml.clustering
 
 import java.io.IOException
 
-import breeze.linalg.{DenseVector => BDV}
+import breeze.linalg._
 import com.github.cloudml.zen.ml.clustering.LDADefines._
 import com.github.cloudml.zen.ml.clustering.algorithm.LDATrainer
 import com.github.cloudml.zen.ml.partitioner._
@@ -28,8 +28,6 @@ import org.apache.hadoop.fs.{FileUtil, Path}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.graphx2._
 import org.apache.spark.graphx2.impl._
-import org.apache.spark.mllib.linalg.distributed.{MatrixEntry, RowMatrix}
-import org.apache.spark.mllib.linalg.{SparseVector => SSV, Vector => SV}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 
@@ -148,8 +146,8 @@ class LDA(@transient var edges: EdgeRDDImpl[TA, _],
       newVerts.checkpoint()
     }
     val newGlobalCounters = algo.collectGlobalCounters(newVerts)
-    val count = newGlobalCounters.data.par.sum
-    assert(count == numTokens, s"numTokens=$numTokens, count=$count")
+    val countTok = sum(convert(newGlobalCounters, Long))
+    assert(countTok == numTokens, s"numTokens=$numTokens, countTok=$countTok")
 
     edges.unpersist(blocking=false)
     verts.unpersist(blocking=false)

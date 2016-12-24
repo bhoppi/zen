@@ -80,10 +80,10 @@ class DistributedGLDAModel(@transient val termTopicsRDD: RDD[(Int, Vector[Int])]
   }
 
   def toStringMeta: String = {
-    val HyperParams(alpha, beta, eta, mu) = params
+    val HyperParams(eta, mu, alpha) = params
     val json = ("class" -> sv_className) ~ ("version" -> sv_formatVersion) ~
       ("numTopics" -> numTopics) ~ ("numGroups" -> numGroups) ~ ("numTerms" -> numTerms) ~
-      ("alpha" -> alpha) ~ ("beta" -> beta) ~ ("eta" -> eta) ~ ("mu" -> mu)
+      ("eta" -> eta) ~ ("mu" -> mu) ~ ("alpha" -> alpha)
     compact(render(json))
   }
 
@@ -92,7 +92,7 @@ class DistributedGLDAModel(@transient val termTopicsRDD: RDD[(Int, Vector[Int])]
 
 object GLDAModel extends Loader[DistributedGLDAModel] {
   case class MetaT(clazz: String, version: String, numTopics: Int, numGroups: Int, numTerms: Int,
-    alpha: Float, beta: Float, eta: Float, mu: Float)
+    eta: Float, mu: Float, alpha: Float)
 
   override def load(sc: SparkContext, path: String): DistributedGLDAModel = {
     val saveAsSolid = sc.getConf.get(cs_saveAsSolid).toBoolean
@@ -103,7 +103,7 @@ object GLDAModel extends Loader[DistributedGLDAModel] {
       val rdd = sc.textFile(LoaderUtils.dataPath(path)).map(parseLine(metas, _))
       (metas, rdd)
     }
-    val MetaT(clazz, version, numTopics, numGroups, numTerms, alpha, beta, eta, mu) = metas
+    val MetaT(clazz, version, numTopics, numGroups, numTerms, eta, mu, alpha) = metas
     validateSave(clazz, version)
 
     val partRdd = sc.getConf.getOption(cs_numPartitions).map(_.toInt) match {
@@ -114,7 +114,7 @@ object GLDAModel extends Loader[DistributedGLDAModel] {
     val storageLevel = StorageLevel.MEMORY_AND_DISK
     val termTopicsRDD = partRdd.persist(storageLevel)
     termTopicsRDD.count()
-    val params = HyperParams(alpha, beta, eta, mu)
+    val params = HyperParams(eta, mu, alpha)
     new DistributedGLDAModel(termTopicsRDD, numTopics, numGroups, numTerms, params, storageLevel)
   }
 
@@ -126,11 +126,10 @@ object GLDAModel extends Loader[DistributedGLDAModel] {
     val numTopics = (json \ "numTopics").extract[Int]
     val numGroups = (json \ "numGroups").extract[Int]
     val numTerms = (json \ "numTerms").extract[Int]
-    val alpha = (json \ "alpha").extract[Float]
-    val beta = (json \ "beta").extract[Float]
     val eta = (json \ "eta").extract[Float]
     val mu = (json \ "mu").extract[Float]
-    MetaT(clazz, version, numTopics, numGroups, numTerms, alpha, beta, eta, mu)
+    val alpha = (json \ "alpha").extract[Float]
+    MetaT(clazz, version, numTopics, numGroups, numTerms, eta, mu, alpha)
   }
 
   def parseLine(metas: MetaT, line: String): (Int, Vector[Int]) = {
