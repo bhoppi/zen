@@ -17,16 +17,12 @@
 
 package com.github.cloudml.zen.ml.semiSupervised
 
-import java.util.concurrent.ConcurrentLinkedQueue
-
 import breeze.linalg._
 import com.github.cloudml.zen.ml.semiSupervised.GLDADefines._
 import com.github.cloudml.zen.ml.util.Concurrent._
 import com.github.cloudml.zen.ml.util.{BVDecompressor, CompressedVector}
 
-import scala.collection.JavaConversions._
 import scala.collection.concurrent.TrieMap
-import scala.concurrent.Future
 
 
 abstract class GLDAMetrics(glda: GLDA) extends Serializable {
@@ -47,6 +43,7 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
     val paraBlocks = glda.paraBlocks
     val numTopics = glda.numTopics
     val numThreads = glda.numThreads
+    val numTerms = glda.numTerms
     val params = glda.params
     val globalVarsBc = glda.globalVarsBc
 
@@ -54,66 +51,57 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
     // Below identical map is used to isolate the impact of locality of CheckpointRDD
     val isoRDD = dataBlocks.mapPartitions(_.seq, preservesPartitioning=true)
     val totalLlh = isoRDD.zipPartitions(shippeds, preservesPartitioning=true) { (dataIter, shpsIter) =>
-      dataIter.map { case (pid, DataBlock(termRecs, docRecs)) =>
+      dataIter.map { case (_, DataBlock(termRecs, docRecs)) =>
+        val totalDocSize = docRecs.length
+        implicit val es = newExecutionContext(numThreads)
+
         // Stage 1: assign all termTopics
         val termVecs = new TrieMap[Int, CompressedVector]()
-        implicit val es = initExecutionContext(numThreads)
-        val allAssign = shpsIter.map(shp => withFuture {
+        parallelized_foreachElement[(Int, ShippedAttrsBlock)](shpsIter, numThreads, (shp, _) => {
           val (_, ShippedAttrsBlock(termIds, termAttrs)) = shp
           termIds.iterator.zip(termAttrs.iterator).foreach { case (termId, termAttr) =>
             termVecs(termId) = termAttr
           }
         })
-        withAwaitReady(Future.sequence(allAssign))
 
         // Stage 2: calculate all docTopics, docLen, docGrp
-        val totalDocSize = docRecs.length
         val docResults = new Array[(SparseVector[Int], Int, Int)](totalDocSize)
-        val sizePerThrd = {
-          val npt = totalDocSize / numThreads
-          if (npt * numThreads == totalDocSize) npt else npt + 1
-        }
-        val allDocVecs = Range(0, numThreads).map(thid => withFuture {
-          val posN = math.min(sizePerThrd * (thid + 1), totalDocSize)
-          var pos = sizePerThrd * thid
-          while (pos < posN) {
-            val DocRec(_, docGrp, docData) = docRecs(pos)
+        parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, _) => {
+          var di = ds
+          while (di < dn) {
+            val DocRec(_, docGrp, docData) = docRecs(di)
             val docTopics = SparseVector.zeros[Int](numTopics)
-            var i = 0
-            while (i < docData.length) {
-              var ind = docData(i)
+            var p = 0
+            while (p < docData.length) {
+              var ind = docData(p)
               if (ind >= 0) {
-                docTopics(docData(i + 1)) += 1
-                i += 2
+                docTopics(docData(p + 1)) += 1
+                p += 2
               } else {
-                i += 2
+                p += 2
                 while (ind < 0) {
-                  docTopics(docData(i)) += 1
-                  i += 1
+                  docTopics(docData(p)) += 1
+                  p += 1
                   ind += 1
                 }
               }
             }
             docTopics.compact()
-            docResults(pos) = (docTopics, sum(docTopics), docGrp.value & 0xFFFF)
-            pos += 1
+            docResults(di) = (docTopics, sum(docTopics), docGrp.value & 0xFFFF)
+            di += 1
           }
         })
-        withAwaitReady(Future.sequence(allDocVecs))
 
         // Stage 3: Calc perplexity
         val eta = params.eta
         val mu = params.mu
-        val thq = new ConcurrentLinkedQueue(1 to numThreads)
         val decomps = Array.fill(numThreads)(new BVDecompressor(numTopics))
-        val GlobalVars(piGK, sigGW, nK, _) = globalVarsBc.value
-        val egSums = calcSum_egDenses(piGK, eta)
-        val allPplx = termRecs.iterator.map(termRec => withFuture {
-          val thid = thq.poll() - 1
+        val GlobalVars(piGK, nK, _) = globalVarsBc.value
+        val megSums = calcSum_megDenses(piGK, eta, mu)
+        parallelized_reduceBatch[TermRec, Double](termRecs.iterator, numThreads, 100, (batch, _, thid) => {
+          val decomp = decomps(thid)
           var llhSum = 0.0
-          try {
-            val decomp = decomps(thid)
-
+          batch.foreach { termRec =>
             val TermRec(termId, termData) = termRec
             val termTopics = decomp.CV2BV(termVecs(termId))
             val denseTermTopics = getDensed(termTopics)
@@ -125,20 +113,16 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
               val docI = termData(i + 1)
               val docData = docRecs(docPos).docData
               val (docTopics, docLen, g) = docResults(docPos)
-              val muSig = mu * sigGW(g, termId)
-              var totalSum = muSig * egSums(g) + tegSums(g) + calcSum_dtmSparse_f(docTopics, docLen, muSig)
-              totalSum /= (1f + eta) * (1f + mu)
+              var totalSum = megSums(g) + tegSums(g) + calcSum_dtmSparse_f(docTopics, docLen, mu)
+              totalSum /= (1f + eta) * (1f + mu * numTerms)
               val ind = docData(docI)
               val termCnt = if (ind >= 0) 1 else -ind
               llhSum += termCnt * math.log(totalSum)
               i += 2
             }
-          } finally {
-            thq.add(thid + 1)
           }
           llhSum
-        })
-        withAwaitResultAndClose(Future.reduce(allPplx)(_ + _))
+        }, _ + _, closing=true)
       }
     }.reduce(_ + _)
 
@@ -147,8 +131,8 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
     this
   }
 
-  def calcSum_egDenses(piGK: DenseMatrix[Float], eta: Float): DenseVector[Float] = {
-    sum(piGK :* eta, Axis._1)
+  def calcSum_megDenses(piGK: DenseMatrix[Float], eta: Float, mu: Float): DenseVector[Float] = {
+    sum(piGK :* (eta * mu), Axis._1)
   }
 
   def calcSum_tegSparses(piGK: DenseMatrix[Float],
@@ -185,7 +169,7 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
   def calcSum_dtmSparse(nK: Array[Int],
     denseTermTopics: DenseVector[Int])(docTopics: SparseVector[Int],
     docLen: Int,
-    muSig: Float): Float = {
+    mu: Float): Float = {
     val used = docTopics.used
     val index = docTopics.index
     val data = docTopics.data
@@ -193,7 +177,7 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
     var i = 0
     while (i < used) {
       val k = index(i)
-      sum += (muSig + denseTermTopics(k).toFloat / nK(k)) * data(i) / docLen
+      sum += (mu + denseTermTopics(k).toFloat / nK(k)) * data(i) / docLen
       i += 1
     }
     sum

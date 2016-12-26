@@ -46,12 +46,12 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     isoRDD.zipPartitions(shippeds, preservesPartitioning=true) { (dataIter, shpsIter) =>
       dataIter.map { case (pid, DataBlock(termRecs, docRecs)) =>
         val totalDocSize = docRecs.length
-        implicit val es = initExecutionContext(numThreads)
+        implicit val es = newExecutionContext(numThreads)
 
         // Stage 1: assign all termTopics
         var startTime = System.nanoTime
         val termVecs = new TrieMap[Int, CompressedVector]()
-        parallelized_foreachElement(shpsIter, numThreads, (shp, _) => {
+        parallelized_foreachElement[(Int, ShippedAttrsBlock)](shpsIter, numThreads, (shp, _) => {
           val (_, ShippedAttrsBlock(termIds, termAttrs)) = shp
           termIds.iterator.zip(termAttrs.iterator).foreach { case (termId, termAttr) =>
             termVecs(termId) = termAttr
@@ -96,12 +96,13 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
         // Stage 3: token sampling
         startTime = System.nanoTime
         val eta = params.eta
+        val mu = params.mu
         val gens = Array.tabulate(numThreads)(thid => new XORShiftRandom((newSeed + pid) * numThreads + thid))
         val decomps = Array.fill(numThreads)(new BVDecompressor(numTopics))
         val cdfDists = Array.fill(numThreads)(new CumulativeDist[Double]().reset(numTopics))
         val GlobalVars(piGK, nK, dG) = globalVarsBc.value
-        val egDists = resetDists_egDenses(piGK, eta)
-        parallelized_foreachBatch(termRecs.iterator, numThreads, 5, (batch, _, thid) => {
+        val megDists = resetDists_megDenses(piGK, eta, mu)
+        parallelized_foreachBatch[TermRec](termRecs.iterator, numThreads, 100, (batch, _, thid) => {
           val gen = gens(thid)
           val decomp = decomps(thid)
           val cdfDist = cdfDists(thid)
@@ -131,12 +132,12 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
               var ind = docData(q)
               if (ind >= 0) {
                 val topic = docData(q + 1)
-                resetDist_dtmSparse_wAdj_f(cdfDist, docTopics, docLen, muSig, topic)
-                totalSamp.resetComponents(cdfDist, tegDist, scaleSamp)
+                resetDist_dtmSparse_wAdj_f(cdfDist, docTopics, docLen, mu, topic)
+                totalSamp.resetComponents(cdfDist, tegDist, megDists(g))
                 docData(q + 1) = totalSamp.resampleRandom(gen, topic)
               } else {
-                resetDist_dtmSparse_f(cdfDist, docTopics, docLen, muSig)
-                totalSamp.resetComponents(cdfDist, tegDist, egDists(g))
+                resetDist_dtmSparse_f(cdfDist, docTopics, docLen, mu)
+                totalSamp.resetComponents(cdfDist, tegDist, megDists(g))
                 q += 2
                 while (ind < 0) {
                   docData(q) = totalSamp.resampleRandom(gen, docData(q))
@@ -154,29 +155,30 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
 
         // Stage 4: doc grouping
         startTime = System.nanoTime
-        val samps = Array.fill(numThreads)(new CumulativeDist[Float]().reset(numGroups))
-        val priors = log(convert(dG, Float) :+= 1f)
+        val priors = log(convert(dG, Double) :+= 1.0)
         parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, thid) => {
           val gen = gens(thid)
-          val samp = samps(thid)
+          val samp = new CumulativeDist[Double]().reset(numGroups)
           var di = ds
           while (di < dn) {
             val docGrp = docRecs(di).docGrp
             if (docGrp.value < 0x10000) {
-              val docData = docRecs(di).docData
+              val (docTopics, docLen, _) = docResults(di)
               val llhs = priors.copy
-              var p = 0
-              while (p < docData.length) {
-                var ind = docData(p)
-                if (ind >= 0) {
-                  p += 2
-                } else {
-                  p += 2
-                  while (ind < 0) {
-                    p += 1
-                    ind += 1
-                  }
+              val used = docTopics.used
+              val index = docTopics.index
+              val data = docTopics.data
+              var i = 0
+              while (i < used) {
+                val k = index(i)
+                val ndk = data(i)
+                var g = 0
+                while (g < numGroups) {
+                  val sgk = (piGK(g, k) * docLen).toDouble
+                  llhs(g) += lgamma(sgk + ndk) - lgamma(sgk)
+                  g += 1
                 }
+                i += 1
               }
               val ng = if (sampIter <= burninIter) {
                 llhs :-= max(llhs)
@@ -198,10 +200,10 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     }
   }
 
-  def resetDists_egDenses(piGK: DenseMatrix[Float], eta: Double): Array[AliasTable[Double]] = {
+  def resetDists_megDenses(piGK: DenseMatrix[Float], eta: Double, mu: Double): Array[AliasTable[Double]] = {
     val egs = new Array[AliasTable[Double]](numGroups)
     Range(0, numGroups).par.foreach { g =>
-      val probs = convert(piGK(g, ::).t, Double) :*= eta
+      val probs = convert(piGK(g, ::).t, Double) :*= (eta * mu)
       egs(g) = new AliasTable[Double]().resetDist(probs.data, null, numTopics)
     }
     egs
@@ -250,7 +252,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     denseTermTopics: DenseVector[Int])(dtm: CumulativeDist[Double],
     docTopics: SparseVector[Int],
     docLen: Int,
-    muSig: Double): CumulativeDist[Double] = {
+    mu: Double): CumulativeDist[Double] = {
     val used = docTopics.used
     val index = docTopics.index
     val data = docTopics.data
@@ -261,13 +263,13 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     var i = 0
     while (i < used) {
       val k = index(i)
-      sum += (muSig + denseTermTopics(k).toDouble / nK(k)) * data(i) / docLen
+      sum += (mu + denseTermTopics(k).toDouble / nK(k)) * data(i) / docLen
       cdf(i) = sum
       i += 1
     }
     dtm._space = index
     dtm.setResidualRate { k =>
-      val a = 1.0 / (denseTermTopics(k) + muSig * nK(k))
+      val a = 1.0 / (denseTermTopics(k) + mu * nK(k))
       val b = 1.0 / docTopics(k)
       a + b - a * b
     }
@@ -278,7 +280,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     denseTermTopics: DenseVector[Int])(dtm: CumulativeDist[Double],
     docTopics: SparseVector[Int],
     docLen: Int,
-    muSig: Double,
+    mu: Double,
     curTopic: Int): CumulativeDist[Double] = {
     val used = docTopics.used
     val index = docTopics.index
@@ -292,9 +294,9 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
       val k = index(i)
       val cnt = data(i)
       val prob = if (k == curTopic) {
-        (muSig + (denseTermTopics(k) - 1).toDouble / nK(k)) * (cnt - 1)
+        (mu + (denseTermTopics(k) - 1).toDouble / nK(k)) * (cnt - 1)
       } else {
-        (muSig + denseTermTopics(k).toDouble / nK(k)) * cnt
+        (mu + denseTermTopics(k).toDouble / nK(k)) * cnt
       }
       sum += prob / docLen
       cdf(i) = sum
@@ -309,7 +311,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     paraBlocks: RDD[(Int, ParaBlock)]): RDD[(Int, ParaBlock)] = {
     val dscp = numTopics >>> 3
     val shippeds = dataBlocks.mapPartitions(_.flatMap { case (_, DataBlock(termRecs, docRecs)) =>
-      parallelized_mapElement(termRecs.iterator, numThreads, termRec => {
+      parallelized_mapElement[TermRec, (Int, SparseVector[Int])](termRecs.iterator, numThreads, termRec => {
         val TermRec(termId, termData) = termRec
         val termTopics = SparseVector.zeros[Int](numTopics)
         var i = 0
@@ -331,7 +333,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
           i += 2
         }
         (termId, termTopics)
-      }, closing=true)(initExecutionContext(numThreads))
+      }, closing=true)(newExecutionContext(numThreads))
     }).partitionBy(paraBlocks.partitioner.get)
 
     // Below identical map is used to isolate the impact of locality of CheckpointRDD
@@ -341,9 +343,9 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
         val totalTermSize = attrs.length
         val results = new Array[Vector[Int]](totalTermSize)
         val marks = new AtomicIntegerArray(totalTermSize)
-        implicit val es = initExecutionContext(numThreads)
+        implicit val es = newExecutionContext(numThreads)
 
-        parallelized_foreachBatch(shpsIter, numThreads, numThreads * 5, (batch, _, _) => {
+        parallelized_foreachBatch[(Int, SparseVector[Int])](shpsIter, numThreads, numThreads * 5, (batch, _, _) => {
           batch.foreach { case (termId, termTopics) =>
             val i = index(termId)
             if (marks.getAndDecrement(i) == 0) {
@@ -383,7 +385,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     val (nGK, dG) = dataBlocks.mapPartitions(_.map { dbp =>
       val docRecs = dbp._2.DocRecs
 
-      parallelized_reduceSplit(docRecs.length, numThreads, (ds, dn) => {
+      parallelized_reduceSplit[Pair](docRecs.length, numThreads, (ds, dn) => {
         val nGKThrd = DenseMatrix.zeros[Int](numGroups, numTopics)
         val dGThrd = DenseVector.zeros[Long](numGroups)
         var di = ds
@@ -409,7 +411,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
           di += 1
         }
         (nGKThrd, dGThrd)
-      }, reducer, closing=true)(initExecutionContext(numThreads))
+      }, reducer, closing=true)(newExecutionContext(numThreads))
     }).treeReduce(reducer)
 
     val nG = Range(0, numGroups).par.map(g => sum(convert(nGK(g, ::).t, Long))).toArray
@@ -428,11 +430,11 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
   def ShipParaBlocks(dataBlocks: RDD[(Int, DataBlock)],
     paraBlocks: RDD[(Int, ParaBlock)]): RDD[(Int, ShippedAttrsBlock)] = {
     paraBlocks.mapPartitions(_.flatMap { case (_, ParaBlock(routes, index, attrs)) =>
-      parallelized_mapBatch(routes.indices.iterator, numThreads, pid => {
+      parallelized_mapBatch[Int, (Int, ShippedAttrsBlock)](routes.indices.iterator, numThreads, pid => {
         val termIds = routes(pid)
         val termAttrs = termIds.map(termId => attrs(index(termId)))
         (pid, ShippedAttrsBlock(termIds, termAttrs))
-      }, closing=true)(initExecutionContext(numThreads))
+      }, closing=true)(newExecutionContext(numThreads))
     }).partitionBy(dataBlocks.partitioner.get)
   }
 }

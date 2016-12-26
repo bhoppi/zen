@@ -25,37 +25,12 @@ import scala.concurrent.duration._
 
 
 object Concurrent extends Serializable {
+  import SimpleConcurrentBackend._
+
   type ThID = Int
 
-  @inline def withFuture[T](body: => T)(implicit es: ExecutionContextExecutorService): Future[T] = {
-    Future(body)(es)
-  }
-
-  @inline def withAwaitReady[T](future: Future[T]): Unit = {
-    Await.ready(future, 1.hour)
-  }
-
-  def withAwaitReadyAndClose[T](future: Future[T])(implicit es: ExecutionContextExecutorService): Unit = {
-    Await.ready(future, 1.hour)
-    closeExecutionContext(es)
-  }
-
-  @inline def withAwaitResult[T](future: Future[T]): T = {
-    Await.result(future, 1.hour)
-  }
-
-  def withAwaitResultAndClose[T](future: Future[T])(implicit es: ExecutionContextExecutorService): T = {
-    val res = Await.result(future, 1.hour)
-    closeExecutionContext(es)
-    res
-  }
-
-  @inline def initExecutionContext(numThreads: Int): ExecutionContextExecutorService = {
-    ExecutionContext.fromExecutorService(Executors.newFixedThreadPool(numThreads))
-  }
-
-  @inline def closeExecutionContext(es: ExecutionContextExecutorService): Unit = {
-    es.shutdown()
+  def newExecutionContext(numThreads: Int): ExecutionContextExecutorService = {
+    initExecutionContext(numThreads)
   }
 
   // coarse-grained multi-threading, simple
@@ -72,7 +47,7 @@ object Concurrent extends Serializable {
       val in = math.min(is + sizePerThrd, totalSize)
       funcThrd(is, in, thid)
     })
-    val bf = if (closing) withAwaitReadyAndClose _ else withAwaitReady _
+    val bf = if (closing) withAwaitReadyAndClose[IndexedSeq[Unit]] _ else withAwaitReady[IndexedSeq[Unit]] _
     bf(Future.sequence(all))
   }
 
@@ -90,7 +65,7 @@ object Concurrent extends Serializable {
         thq.add(thid + 1)
       }
     })
-    val bf = if (closing) withAwaitReadyAndClose _ else withAwaitReady _
+    val bf = if (closing) withAwaitReadyAndClose[Iterator[Unit]] _ else withAwaitReady[Iterator[Unit]] _
     bf(Future.sequence(all))
   }
 
@@ -111,7 +86,7 @@ object Concurrent extends Serializable {
         }
       }
     }
-    val bf = if (closing) withAwaitReadyAndClose _ else withAwaitReady _
+    val bf = if (closing) withAwaitReadyAndClose[Iterator[Unit]] _ else withAwaitReady[Iterator[Unit]] _
     bf(Future.sequence(all))
   }
 
@@ -120,7 +95,7 @@ object Concurrent extends Serializable {
     funcThrd: T => U,
     closing: Boolean = false)(implicit es: ExecutionContextExecutorService): Iterator[U] = {
     val all = totalIter.map(e => withFuture(funcThrd(e)))
-    val bf = if (closing) withAwaitResultAndClose _ else withAwaitResult _
+    val bf = if (closing) withAwaitResultAndClose[Iterator[U]] _ else withAwaitResult[Iterator[U]] _
     bf(Future.sequence(all))
   }
 
@@ -153,12 +128,66 @@ object Concurrent extends Serializable {
       val in = math.min(is + sizePerThrd, totalSize)
       funcThrd(is, in)
     })
-    val bf = if (closing) withAwaitResultAndClose _ else withAwaitResult _
+    val bf = if (closing) withAwaitResultAndClose[U] _ else withAwaitResult[U] _
+    bf(Future.reduce(all)(reducer))
+  }
+
+  def parallelized_reduceBatch[T, U](totalIter: Iterator[T],
+    nThreads: Int,
+    nBatch: Int,
+    funcThrd: (Seq[T], Int, ThID) => U,
+    reducer: (U, U) => U,
+    closing: Boolean = false)(implicit es: ExecutionContextExecutorService): U = {
+    val thq = new ConcurrentLinkedQueue(1 to nThreads)
+    val all = totalIter.grouped(nBatch).zipWithIndex.map { case (batch, bi) =>
+      withFuture {
+        val thid = thq.poll() - 1
+        try {
+          funcThrd(batch, bi, thid)
+        } finally {
+          thq.add(thid + 1)
+        }
+      }
+    }
+    val bf = if (closing) withAwaitResultAndClose[U] _ else withAwaitResult[U] _
     bf(Future.reduce(all)(reducer))
   }
 }
 
-object DebugConcurrent extends Serializable {
+object SimpleConcurrentBackend extends Serializable {
+  @inline def withFuture[T](body: => T)(implicit es: ExecutionContextExecutorService): Future[T] = {
+    Future(body)(es)
+  }
+
+  @inline def withAwaitReady[T](future: Future[T]): Unit = {
+    Await.ready(future, 1.hour)
+  }
+
+  def withAwaitReadyAndClose[T](future: Future[T])(implicit es: ExecutionContextExecutorService): Unit = {
+    Await.ready(future, 1.hour)
+    closeExecutionContext(es)
+  }
+
+  @inline def withAwaitResult[T](future: Future[T]): T = {
+    Await.result(future, 1.hour)
+  }
+
+  def withAwaitResultAndClose[T](future: Future[T])(implicit es: ExecutionContextExecutorService): T = {
+    val res = Await.result(future, 1.hour)
+    closeExecutionContext(es)
+    res
+  }
+
+  @inline def initExecutionContext(numThreads: Int): ExecutionContextExecutorService = {
+    ExecutionContext.fromExecutorService(Executors.newFixedThreadPool(numThreads))
+  }
+
+  @inline def closeExecutionContext(es: ExecutionContextExecutorService): Unit = {
+    es.shutdown()
+  }
+}
+
+object DebugConcurrentBackend extends Serializable {
   def withFuture[T](body: => T)(implicit es: ExecutionContextExecutorService): Future[T] = {
     val future = Future(body)(es)
     future.onFailure { case e =>

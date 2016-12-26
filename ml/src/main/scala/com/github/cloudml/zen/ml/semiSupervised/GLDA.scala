@@ -195,7 +195,7 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
           results(ti) = decomp.CV2BV(attrs(ti))
           ti += 1
         }
-      }, closing=true)(initExecutionContext(numThreads))
+      }, closing=true)(newExecutionContext(numThreads))
 
       index.iterator.map { case (termId, termIdx) => (termId, results(termIdx)) }
     }, preservesPartitioning=true)
@@ -240,7 +240,7 @@ object GLDA {
           di += 1
         }
         numTokensThrd
-      }, _ + _, closing=true)(initExecutionContext(numThreads))
+      }, _ + _, closing=true)(newExecutionContext(numThreads))
     }).reduce(_ + _)
     println(s"tokens in the corpus: $numTokens")
 
@@ -303,7 +303,7 @@ object GLDA {
           docBows(di) = DocBow(docId, docGrp, docTerms)
           di += 1
         }
-      }, closing=true)(initExecutionContext(numThreads))
+      }, closing=true)(newExecutionContext(numThreads))
 
       docBows.iterator
     }
@@ -318,7 +318,7 @@ object GLDA {
       val totalDocSize = docs.length
       val docRecs = new Array[DocRec](totalDocSize)
       val termSet = new TrieMap[Int, Int]()
-      implicit val es = initExecutionContext(numThreads)
+      implicit val es = newExecutionContext(numThreads)
 
       parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, thid) => {
         val gen = new XORShiftRandom(System.nanoTime * numThreads + thid)

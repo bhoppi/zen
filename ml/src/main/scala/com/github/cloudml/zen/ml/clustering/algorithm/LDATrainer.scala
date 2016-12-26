@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicIntegerArray
 import breeze.linalg.{sum, DenseVector => BDV, SparseVector => BSV}
 import com.github.cloudml.zen.ml.clustering.LDADefines._
 import com.github.cloudml.zen.ml.util.BVCompressor
-import com.github.cloudml.zen.ml.util.Concurrent._
+import com.github.cloudml.zen.ml.util.SimpleConcurrentBackend._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.graphx2.impl.{EdgePartition, ShippableVertexPartition => VertPartition}
 

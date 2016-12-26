@@ -79,7 +79,7 @@ object GLDASuite {
   val numDocs = 100
   val expDocLen = 300
   val eta = 0.1f
-  val mu = 0.1f
+  val mu = 1e-4f
   val alpha = 0.5f
   val totalIter = 2
   val burninIter = 1

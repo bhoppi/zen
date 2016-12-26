@@ -24,7 +24,7 @@ import breeze.numerics._
 import com.github.cloudml.zen.ml.clustering.LDADefines._
 import com.github.cloudml.zen.ml.clustering.LDAPrecalc._
 import com.github.cloudml.zen.ml.util.BVDecompressor
-import com.github.cloudml.zen.ml.util.Concurrent._
+import com.github.cloudml.zen.ml.util.SimpleConcurrentBackend._
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.graphx2.impl.{ShippableVertexPartition => VertPartition}
 
