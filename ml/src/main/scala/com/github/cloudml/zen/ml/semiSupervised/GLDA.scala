@@ -291,7 +291,7 @@ object GLDA {
           } else {
             gen.nextInt(numGroups)
           }
-          val docTerms = SparseVector.zeros[Int](65535)
+          val docTerms = SparseVector.zeros[Int](Int.MaxValue)
           fields.tail.foreach { field =>
             val pair = field.split(":")
             val termId = pair(0).toInt
