@@ -157,36 +157,13 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
         startTime = System.nanoTime
         val priors = log(convert(dG, Double) :+= 1.0)
         parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, thid) => {
-          val gen = gens(thid)
-          val samp = new CumulativeDist[Double]().reset(numGroups)
+          val grouper = new DirMultiGrouper(numGroups, piGK, priors, burninIter, sampIter)
           var di = ds
           while (di < dn) {
             val docGrp = docRecs(di).docGrp
             if (docGrp.value < 0x10000) {
               val (docTopics, docLen, _) = docResults(di)
-              val llhs = priors.copy
-              val used = docTopics.used
-              val index = docTopics.index
-              val data = docTopics.data
-              var i = 0
-              while (i < used) {
-                val k = index(i)
-                val ndk = data(i)
-                var g = 0
-                while (g < numGroups) {
-                  val sgk = (piGK(g, k) * docLen).toDouble
-                  llhs(g) += lgamma(sgk + ndk) - lgamma(sgk)
-                  g += 1
-                }
-                i += 1
-              }
-              val ng = if (sampIter <= burninIter) {
-                llhs :-= max(llhs)
-                samp.resetDist(exp(llhs).iterator, numGroups).sampleRandom(gen)
-              } else {
-                argmax(llhs)
-              }
-              docGrp.value = ng
+              docGrp.value = grouper.getGrp(docTopics, docLen)
             }
             di += 1
           }
