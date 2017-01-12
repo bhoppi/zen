@@ -149,6 +149,7 @@ object GLDADriver {
       "           -sampleRate=<Float(*1.0)>\n" +
       "           -chkptInterval=<Int(*10)> (0 or negative disables checkpoint)\n" +
       "           -evalMetric=<*None|{PPLX|LLH|COH}+>\n" +
+      "           -docGrouper=<DirMulti|(*Discrete)|Battacharyya|Euclidean>"
       "           -saveInterval=<Int(*0)> (0 or negative disables save at intervals)\n" +
       "           -saveAsSolid=<Boolean(*true)>\n" +
       "           -labelsRate=<Float(*1.0)>\n" +

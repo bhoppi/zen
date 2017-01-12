@@ -47,6 +47,7 @@ object GLDADefines {
   val cs_sampleRate = "zen.glda.sampleRate"
   val cs_chkptInterval = "zen.glda.chkptInterval"
   val cs_evalMetric = "zen.glda.evalMetric"
+  val cs_docGrouper = "zen.glda.docGrouper"
   val cs_saveInterval = "zen.glda.saveInterval"
   val cs_saveAsSolid = "zen.glda.saveAsSolid"
   val cs_labelsRate = "zen.glda.labelsRate"
@@ -56,6 +57,7 @@ object GLDADefines {
     conf.set(cs_sampleRate, options.getOrElse("samplerate", "1.0"))
     conf.set(cs_chkptInterval, options.getOrElse("chkptinterval", "10"))
     conf.set(cs_evalMetric, options.getOrElse("evalmetric", "none"))
+    conf.set(cs_docGrouper, options.getOrElse("docgrouper", "discrete"))
     conf.set(cs_saveInterval, options.getOrElse("saveinterval", "0"))
     conf.set(cs_saveAsSolid, options.getOrElse("saveassolid", "true"))
     conf.set(cs_labelsRate, options.getOrElse("labelsrate", "1.0"))

@@ -39,7 +39,8 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     params: HyperParams,
     seed: Int,
     sampIter: Int,
-    burninIter: Int): RDD[(Int, DataBlock)] = {
+    burninIter: Int,
+    dgStr: String): RDD[(Int, DataBlock)] = {
     val newSeed = (seed + sampIter) * dataBlocks.partitions.length
     // Below identical map is used to isolate the impact of locality of CheckpointRDD
     val isoRDD = dataBlocks.mapPartitions(_.seq, preservesPartitioning=true)
@@ -156,8 +157,8 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
         // Stage 4: doc grouping
         startTime = System.nanoTime
         val priors = log(convert(dG, Double) :+= 1.0)
-        parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, thid) => {
-          val grouper = new DirMultiGrouper(numGroups, piGK, priors, burninIter, sampIter)
+        parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, _) => {
+          val grouper = DocGrouper("dirmulti", numGroups, piGK, priors, burninIter, sampIter)
           var di = ds
           while (di < dn) {
             val docGrp = docRecs(di).docGrp

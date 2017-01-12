@@ -109,10 +109,11 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
   }
 
   def fitIteration(sampIter: Int, burninIter: Int, needChkpt: Boolean): Unit = {
+    val dgStr = scConf.get(cs_docGrouper)
     val startedAt = System.nanoTime
     val shippeds = algo.ShipParaBlocks(dataBlocks, paraBlocks)
     val newDataBlocks = algo.SampleNGroup(dataBlocks, shippeds, globalVarsBc, params, seed,
-      sampIter, burninIter)
+      sampIter, burninIter, dgStr)
     newDataBlocks.persist(storageLevel).setName(s"DataBlocks-$sampIter")
     if (needChkpt) {
       newDataBlocks.checkpoint()
