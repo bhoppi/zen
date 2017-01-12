@@ -290,7 +290,7 @@ object GLDA {
           val docGrp = if (docInfo.length > 1 && gen.nextFloat() < labelsRate) {
             docInfo(1).toInt | 0x10000
           } else {
-            gen.nextInt(numGroups)
+            numGroups
           }
           val docTerms = SparseVector.zeros[Int](Int.MaxValue)
           fields.tail.foreach { field =>

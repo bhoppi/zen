@@ -139,13 +139,11 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
     nK: Array[Int],
     termTopics: Vector[Int],
     eta: Float): DenseVector[Float] = {
-    val numTopics = piGK.cols
-    val numGroups = piGK.rows
-    val tegSums = DenseVector.zeros[Float](numGroups)
+    val tegSums = DenseVector.zeros[Float](piGK.rows)
     termTopics match {
       case v: DenseVector[Int] =>
         var k = 0
-        while (k < numTopics) {
+        while (k < piGK.cols) {
           val cnt = v(k)
           if (cnt > 0) {
             tegSums :+= piGK(::, k) :* (eta * cnt / nK(k))

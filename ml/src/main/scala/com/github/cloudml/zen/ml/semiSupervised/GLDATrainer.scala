@@ -112,7 +112,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
             val TermRec(termId, termData) = termRec
             val termTopics = decomp.CV2BV(termVecs(termId))
             val denseTermTopics = getDensed(termTopics)
-            val tegDists = new Array[AliasTable[Double]](numGroups)
+            val tegDists = new Array[AliasTable[Double]](numGroups + 1)
             val resetDist_tegSparse_f = resetDist_tegSparse(piGK, nK, termTopics, denseTermTopics, eta) _
             val resetDist_dtmSparse_f = resetDist_dtmSparse(nK, denseTermTopics) _
             val resetDist_dtmSparse_wAdj_f = resetDist_dtmSparse_wAdj(nK, denseTermTopics) _
@@ -156,19 +156,21 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
 
         // Stage 4: doc grouping
         startTime = System.nanoTime
-        val priors = log(convert(dG, Double) :+= 1.0)
-        parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, _) => {
-          val grouper = DocGrouper("dirmulti", numGroups, piGK, priors, burninIter, sampIter)
-          var di = ds
-          while (di < dn) {
-            val docGrp = docRecs(di).docGrp
-            if (docGrp.value < 0x10000) {
-              val (docTopics, docLen, _) = docResults(di)
-              docGrp.value = grouper.getGrp(docTopics, docLen)
+        if (sampIter > 20) {
+          val priors = log(convert(dG, Double) :+= 1.0)
+          parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, _) => {
+            val grouper = DocGrouper("dirmulti", numGroups, piGK, priors, burninIter, sampIter)
+            var di = ds
+            while (di < dn) {
+              val docGrp = docRecs(di).docGrp
+              if (docGrp.value < 0x10000) {
+                val (docTopics, docLen, _) = docResults(di)
+                docGrp.value = grouper.getGrp(docTopics, docLen)
+              }
+              di += 1
             }
-            di += 1
-          }
-        }, closing=true)
+          }, closing=true)
+        }
         endTime = System.nanoTime
         elapsed = (endTime - startTime) / 1e9
         println(s"(Iteration $sampIter): Grouping docs takes: ${elapsed}s.")
@@ -179,8 +181,9 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
   }
 
   def resetDists_megDenses(piGK: DenseMatrix[Float], eta: Double, mu: Double): Array[AliasTable[Double]] = {
-    val egs = new Array[AliasTable[Double]](numGroups)
-    Range(0, numGroups).par.foreach { g =>
+    val ng = numGroups + 1
+    val egs = new Array[AliasTable[Double]](ng)
+    Range(0, ng).par.foreach { g =>
       val probs = convert(piGK(g, ::).t, Double) :*= (eta * mu)
       egs(g) = new AliasTable[Double]().resetDist(probs.data, null, numTopics)
     }
@@ -358,14 +361,16 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
   def collectGlobalVariables(dataBlocks: RDD[(Int, DataBlock)],
     params: HyperParams,
     numTerms: Int): GlobalVars = {
+    val ng = numGroups + 1
     type Pair = (DenseMatrix[Int], DenseVector[Long])
     val reducer: (Pair, Pair) => Pair = (a, b) => (a._1 :+= b._1, a._2 :+= b._2)
+
     val (nGK, dG) = dataBlocks.mapPartitions(_.map { dbp =>
       val docRecs = dbp._2.DocRecs
 
       parallelized_reduceSplit[Pair](docRecs.length, numThreads, (ds, dn) => {
-        val nGKThrd = DenseMatrix.zeros[Int](numGroups, numTopics)
-        val dGThrd = DenseVector.zeros[Long](numGroups)
+        val nGKThrd = DenseMatrix.zeros[Int](ng, numTopics)
+        val dGThrd = DenseVector.zeros[Long](ng)
         var di = ds
         while (di < dn) {
           val DocRec(_, docGrp, docData) = docRecs(di)
@@ -392,11 +397,11 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
       }, reducer, closing=true)(newExecutionContext(numThreads))
     }).treeReduce(reducer)
 
-    val nG = Range(0, numGroups).par.map(g => sum(convert(nGK(g, ::).t, Long))).toArray
+    val nG = Range(0, ng).par.map(g => sum(convert(nGK(g, ::).t, Long))).toArray
     val nK = Range(0, numTopics).par.map(k => sum(nGK(::, k))).toArray
     val alpha = params.alpha
-    val piGK = DenseMatrix.zeros[Float](numGroups, numTopics)
-    Range(0, numGroups).par.foreach { g =>
+    val piGK = DenseMatrix.zeros[Float](ng, numTopics)
+    Range(0, ng).par.foreach { g =>
       val piGKDenom = 1f / (nG(g) + alpha * numTopics)
       for (k <- 0 until numTopics) {
         piGK(g, k) = (nGK(g, k) + alpha) * piGKDenom
