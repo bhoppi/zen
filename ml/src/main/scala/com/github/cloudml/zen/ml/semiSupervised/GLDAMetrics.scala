@@ -95,9 +95,10 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
         // Stage 3: Calc perplexity
         val eta = params.eta
         val mu = params.mu
+        val mu_term = mu / numTerms
         val decomps = Array.fill(numThreads)(new BVDecompressor(numTopics))
         val GlobalVars(piGK, nK, _) = globalVarsBc.value
-        val megSums = calcSum_megDenses(piGK, eta, mu)
+        val megSums = calcSum_megDenses(piGK, eta, mu_term)
         parallelized_reduceBatch[TermRec, Double](termRecs.iterator, numThreads, 100, (batch, _, thid) => {
           val decomp = decomps(thid)
           var llhSum = 0.0
@@ -113,8 +114,8 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
               val docI = termData(i + 1)
               val docData = docRecs(docPos).docData
               val (docTopics, docLen, g) = docResults(docPos)
-              var totalSum = megSums(g) + tegSums(g) + calcSum_dtmSparse_f(docTopics, docLen, mu)
-              totalSum /= (1f + eta) * (1f + mu * numTerms)
+              var totalSum = megSums(g) + tegSums(g) + calcSum_dtmSparse_f(docTopics, docLen, mu_term)
+              totalSum /= (1f + eta) * (1f + mu)
               val ind = docData(docI)
               val termCnt = if (ind >= 0) 1 else -ind
               llhSum += termCnt * math.log(totalSum)
@@ -131,8 +132,8 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
     this
   }
 
-  def calcSum_megDenses(piGK: DenseMatrix[Float], eta: Float, mu: Float): DenseVector[Float] = {
-    sum(piGK :* (eta * mu), Axis._1)
+  def calcSum_megDenses(piGK: DenseMatrix[Float], eta: Float, mu_term: Float): DenseVector[Float] = {
+    sum(piGK :* (eta * mu_term), Axis._1)
   }
 
   def calcSum_tegSparses(piGK: DenseMatrix[Float],
@@ -167,7 +168,7 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
   def calcSum_dtmSparse(nK: Array[Int],
     denseTermTopics: DenseVector[Int])(docTopics: SparseVector[Int],
     docLen: Int,
-    mu: Float): Float = {
+    mu_term: Float): Float = {
     val used = docTopics.used
     val index = docTopics.index
     val data = docTopics.data
@@ -175,7 +176,7 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
     var i = 0
     while (i < used) {
       val k = index(i)
-      sum += (mu + denseTermTopics(k).toFloat / nK(k)) * data(i) / docLen
+      sum += (mu_term + denseTermTopics(k).toFloat / nK(k)) * data(i) / docLen
       i += 1
     }
     sum

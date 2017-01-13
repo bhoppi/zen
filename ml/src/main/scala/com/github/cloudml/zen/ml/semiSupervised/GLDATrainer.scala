@@ -36,6 +36,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
   def SampleNGroup(dataBlocks: RDD[(Int, DataBlock)],
     shippeds: RDD[(Int, ShippedAttrsBlock)],
     globalVarsBc: Broadcast[GlobalVars],
+    numTerms: Int,
     params: HyperParams,
     seed: Int,
     sampIter: Int,
@@ -97,12 +98,12 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
         // Stage 3: token sampling
         startTime = System.nanoTime
         val eta = params.eta
-        val mu = params.mu
+        val mu_term = params.mu / numTerms
         val gens = Array.tabulate(numThreads)(thid => new XORShiftRandom((newSeed + pid) * numThreads + thid))
         val decomps = Array.fill(numThreads)(new BVDecompressor(numTopics))
         val cdfDists = Array.fill(numThreads)(new CumulativeDist[Double]().reset(numTopics))
         val GlobalVars(piGK, nK, dG) = globalVarsBc.value
-        val megDists = resetDists_megDenses(piGK, eta, mu)
+        val megDists = resetDists_megDenses(piGK, eta, mu_term)
         parallelized_foreachBatch[TermRec](termRecs.iterator, numThreads, 100, (batch, _, thid) => {
           val gen = gens(thid)
           val decomp = decomps(thid)
@@ -133,11 +134,11 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
               var ind = docData(q)
               if (ind >= 0) {
                 val topic = docData(q + 1)
-                resetDist_dtmSparse_wAdj_f(cdfDist, docTopics, docLen, mu, topic)
+                resetDist_dtmSparse_wAdj_f(cdfDist, docTopics, docLen, mu_term, topic)
                 totalSamp.resetComponents(cdfDist, tegDist, megDists(g))
                 docData(q + 1) = totalSamp.resampleRandom(gen, topic)
               } else {
-                resetDist_dtmSparse_f(cdfDist, docTopics, docLen, mu)
+                resetDist_dtmSparse_f(cdfDist, docTopics, docLen, mu_term)
                 totalSamp.resetComponents(cdfDist, tegDist, megDists(g))
                 q += 2
                 while (ind < 0) {
@@ -157,9 +158,9 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
         // Stage 4: doc grouping
         startTime = System.nanoTime
         if (sampIter > 20) {
-          val priors = log(convert(dG, Double) :+= 1.0)
+          val priors = log(convert(dG.slice(0, numGroups), Double) :+= 1.0)
           parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, _) => {
-            val grouper = DocGrouper("dirmulti", numGroups, piGK, priors, burninIter, sampIter)
+            val grouper = DocGrouper(dgStr, numGroups, piGK, priors, burninIter, sampIter)
             var di = ds
             while (di < dn) {
               val docGrp = docRecs(di).docGrp
@@ -180,11 +181,11 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     }
   }
 
-  def resetDists_megDenses(piGK: DenseMatrix[Float], eta: Double, mu: Double): Array[AliasTable[Double]] = {
+  def resetDists_megDenses(piGK: DenseMatrix[Float], eta: Double, mu_term: Double): Array[AliasTable[Double]] = {
     val ng = numGroups + 1
     val egs = new Array[AliasTable[Double]](ng)
     Range(0, ng).par.foreach { g =>
-      val probs = convert(piGK(g, ::).t, Double) :*= (eta * mu)
+      val probs = convert(piGK(g, ::).t, Double) :*= (eta * mu_term)
       egs(g) = new AliasTable[Double]().resetDist(probs.data, null, numTopics)
     }
     egs
@@ -233,7 +234,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     denseTermTopics: DenseVector[Int])(dtm: CumulativeDist[Double],
     docTopics: SparseVector[Int],
     docLen: Int,
-    mu: Double): CumulativeDist[Double] = {
+    mu_term: Double): CumulativeDist[Double] = {
     val used = docTopics.used
     val index = docTopics.index
     val data = docTopics.data
@@ -244,13 +245,13 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     var i = 0
     while (i < used) {
       val k = index(i)
-      sum += (mu + denseTermTopics(k).toDouble / nK(k)) * data(i) / docLen
+      sum += (mu_term + denseTermTopics(k).toDouble / nK(k)) * data(i) / docLen
       cdf(i) = sum
       i += 1
     }
     dtm._space = index
     dtm.setResidualRate { k =>
-      val a = 1.0 / (denseTermTopics(k) + mu * nK(k))
+      val a = 1.0 / (denseTermTopics(k) + mu_term * nK(k))
       val b = 1.0 / docTopics(k)
       a + b - a * b
     }
@@ -261,7 +262,7 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
     denseTermTopics: DenseVector[Int])(dtm: CumulativeDist[Double],
     docTopics: SparseVector[Int],
     docLen: Int,
-    mu: Double,
+    mu_term: Double,
     curTopic: Int): CumulativeDist[Double] = {
     val used = docTopics.used
     val index = docTopics.index
@@ -275,9 +276,9 @@ class GLDATrainer(numTopics: Int, numGroups: Int, numThreads: Int)
       val k = index(i)
       val cnt = data(i)
       val prob = if (k == curTopic) {
-        (mu + (denseTermTopics(k) - 1).toDouble / nK(k)) * (cnt - 1)
+        (mu_term + (denseTermTopics(k) - 1).toDouble / nK(k)) * (cnt - 1)
       } else {
-        (mu + denseTermTopics(k).toDouble / nK(k)) * cnt
+        (mu_term + denseTermTopics(k).toDouble / nK(k)) * cnt
       }
       sum += prob / docLen
       cdf(i) = sum

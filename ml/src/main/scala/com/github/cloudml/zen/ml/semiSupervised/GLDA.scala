@@ -88,6 +88,7 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
       val countTok = sum(convert(globalVars.nK, Long))
       val countDoc = sum(globalVars.dG)
       assert(countTok == numTokens && countDoc == numDocs, s"countTok=$countTok, countDoc=$countDoc")
+      println(s"dG: ${globalVars.dG}")
       globalVarsBc = scContext.broadcast(globalVars)
       fitIteration(iter, burninIter, needChkpt)
       if (toEval) {
@@ -112,7 +113,7 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
     val dgStr = scConf.get(cs_docGrouper)
     val startedAt = System.nanoTime
     val shippeds = algo.ShipParaBlocks(dataBlocks, paraBlocks)
-    val newDataBlocks = algo.SampleNGroup(dataBlocks, shippeds, globalVarsBc, params, seed,
+    val newDataBlocks = algo.SampleNGroup(dataBlocks, shippeds, globalVarsBc, numTerms, params, seed,
       sampIter, burninIter, dgStr)
     newDataBlocks.persist(storageLevel).setName(s"DataBlocks-$sampIter")
     if (needChkpt) {
