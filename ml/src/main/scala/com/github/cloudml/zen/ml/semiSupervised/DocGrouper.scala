@@ -107,7 +107,7 @@ abstract class MetricGrouper(numGroups: Int,
   def calcMetrics(docTopics: SparseVector[Int], docLen: Int, metrics: Array[Double]): Unit
 }
 
-class BtchyGrouper(numGroups: Int,
+class BattacharyyaGrouper(numGroups: Int,
   piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, piGK) {
   def calcMetrics(docTopics: SparseVector[Int], docLen: Int, metrics: Array[Double]): Unit = {
     val used = docTopics.used
@@ -140,7 +140,7 @@ class EuclideanGrouper(numGroups: Int,
       var g = 0
       while (g < numGroups) {
         val delta = piGK(g, k) - pk
-        metrics(g) += delta * delta
+        metrics(g) -= delta * delta
         g += 1
       }
       i += 1
@@ -161,7 +161,7 @@ object DocGrouper {
       case "discrete" =>
         new DiscreteGrouper(numGroups, piGK, priors, burninIter, sampIter)
       case "battacharyya" =>
-        new BtchyGrouper(numGroups, piGK)
+        new BattacharyyaGrouper(numGroups, piGK)
       case "euclidean" =>
         new EuclideanGrouper(numGroups, piGK)
       case _ =>
