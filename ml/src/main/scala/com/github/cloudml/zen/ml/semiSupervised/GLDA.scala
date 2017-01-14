@@ -71,7 +71,7 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
     val burninIter = scConf.get(cs_burninIter).toInt
     val docGrouperStr = scConf.get(cs_docGrouper).toLowerCase
     val priors = log(convert(globalVars.dG.slice(0, numGroups), Double) :+= 1.0)
-    groupContext = new GroupContext(numGroups, priors, burninIter, docGrouperStr)
+    groupContext = new GroupContext(numGroups, params.eta, priors, burninIter, docGrouperStr)
 
     this
   }

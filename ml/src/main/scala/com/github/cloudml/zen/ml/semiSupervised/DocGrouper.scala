@@ -38,7 +38,7 @@ abstract class BayesianGrouper(numGroups: Int,
 
   def getGrp(docTopics: SparseVector[Int], docLen: Int): Int = {
     val llhs = priors.copy
-    calcLlhs(docTopics, docLen, llhs)
+    calcLlhs(docTopics, docLen.toDouble, llhs)
     if (toSample) {
       llhs :-= max(llhs)
       samp.resetDist(exp(llhs).iterator, numGroups).sampleRandom(gen)
@@ -47,7 +47,7 @@ abstract class BayesianGrouper(numGroups: Int,
     }
   }
 
-  def calcLlhs(docTopics: SparseVector[Int], docLen: Int, llhs: DenseVector[Double]): Unit
+  def calcLlhs(docTopics: SparseVector[Int], nd: Double, llhs: DenseVector[Double]): Unit
 }
 
 class DirMultiGrouper(numGroups: Int,
@@ -55,7 +55,7 @@ class DirMultiGrouper(numGroups: Int,
   priors: DenseVector[Double],
   burninIter: Int,
   sampIter: Int) extends BayesianGrouper(numGroups, piGK, priors, burninIter, sampIter) {
-  override def calcLlhs(docTopics: SparseVector[Int], docLen: Int, llhs: DenseVector[Double]): Unit = {
+  override def calcLlhs(docTopics: SparseVector[Int], nd: Double, llhs: DenseVector[Double]): Unit = {
     val used = docTopics.used
     val index = docTopics.index
     val data = docTopics.data
@@ -65,7 +65,7 @@ class DirMultiGrouper(numGroups: Int,
       val ndk = data(i)
       var g = 0
       while (g < numGroups) {
-        val sgk = (piGK(g, k) * docLen).toDouble
+        val sgk = piGK(g, k) * nd
         llhs(g) += lgamma(sgk + ndk) - lgamma(sgk)
         g += 1
       }
@@ -79,7 +79,7 @@ class NaiveBayesGrouper(numGroups: Int,
   priors: DenseVector[Double],
   burninIter: Int,
   sampIter: Int) extends BayesianGrouper(numGroups, piGK, priors, burninIter, sampIter) {
-  override def calcLlhs(docTopics: SparseVector[Int], docLen: Int, llhs: DenseVector[Double]): Unit = {
+  override def calcLlhs(docTopics: SparseVector[Int], nd: Double, llhs: DenseVector[Double]): Unit = {
     val used = docTopics.used
     val index = docTopics.index
     val data = docTopics.data
@@ -98,29 +98,40 @@ class NaiveBayesGrouper(numGroups: Int,
 }
 
 abstract class MetricGrouper(numGroups: Int,
+  eta: Double,
   piGK: DenseMatrix[Float]) extends DocGrouper {
+  private val bases = calcBases()
+
+  def calcBases(): DenseVector[Double] = DenseVector.zeros[Double](numGroups)
+
   def getGrp(docTopics: SparseVector[Int], docLen: Int): Int = {
-    val metrics = new Array[Double](numGroups)
-    calcMetrics(docTopics, docLen, metrics)
-    argmax(metrics)
+    val metrics = bases.copy
+    calcMetrics(docTopics, docLen.toDouble, metrics)
+    argmin(metrics)
   }
 
-  def calcMetrics(docTopics: SparseVector[Int], docLen: Int, metrics: Array[Double]): Unit
+  def calcMetrics(docTopics: SparseVector[Int], nd: Double, metrics: DenseVector[Double]): Unit
 }
 
 class KLDivergenceGrouper(numGroups: Int,
-  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, piGK) {
-  def calcMetrics(docTopics: SparseVector[Int], docLen: Int, metrics: Array[Double]): Unit = {
+  eta: Double,
+  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, eta, piGK) {
+  private val ln1pe = math.log(1.0 + eta)
+  private val elned1pe = eta * (math.log(eta) - ln1pe)
+
+  def calcMetrics(docTopics: SparseVector[Int], nd: Double, metrics: DenseVector[Double]): Unit = {
     val used = docTopics.used
     val index = docTopics.index
     val data = docTopics.data
     var i = 0
     while (i < used) {
       val k = index(i)
-      val pk = data(i) / docLen.toDouble
+      val pk = data(i) / nd
       var g = 0
       while (g < numGroups) {
-        metrics(g) += math.sqrt(piGK(g, k) * pk)
+        val pigk = piGK(g, k)
+        val rk = pk / pigk + eta
+        metrics(g) += (rk * (math.log(rk) - ln1pe) - elned1pe) * pigk
         g += 1
       }
       i += 1
@@ -129,18 +140,22 @@ class KLDivergenceGrouper(numGroups: Int,
 }
 
 class BattacharyyaGrouper(numGroups: Int,
-  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, piGK) {
-  def calcMetrics(docTopics: SparseVector[Int], docLen: Int, metrics: Array[Double]): Unit = {
+  eta: Double,
+  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, eta, piGK) {
+  private val sqrt_eta = math.sqrt(eta)
+
+  def calcMetrics(docTopics: SparseVector[Int], nd: Double, metrics: DenseVector[Double]): Unit = {
     val used = docTopics.used
     val index = docTopics.index
     val data = docTopics.data
     var i = 0
     while (i < used) {
       val k = index(i)
-      val pk = data(i) / docLen.toDouble
+      val pk = data(i) / nd
       var g = 0
       while (g < numGroups) {
-        metrics(g) += math.sqrt(piGK(g, k) * pk)
+        val pigk = piGK(g, k)
+        metrics(g) += (sqrt_eta - math.sqrt(pk / pigk + eta)) * pigk
         g += 1
       }
       i += 1
@@ -149,19 +164,23 @@ class BattacharyyaGrouper(numGroups: Int,
 }
 
 class EuclideanGrouper(numGroups: Int,
-  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, piGK) {
-  def calcMetrics(docTopics: SparseVector[Int], docLen: Int, metrics: Array[Double]): Unit = {
+  eta: Double,
+  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, eta, piGK) {
+  override def calcBases(): DenseVector[Double] = {
+    convert(sum(piGK :* piGK, Axis._1).slice(0, numGroups), Double)
+  }
+
+  def calcMetrics(docTopics: SparseVector[Int], nd: Double, metrics: DenseVector[Double]): Unit = {
     val used = docTopics.used
     val index = docTopics.index
     val data = docTopics.data
     var i = 0
     while (i < used) {
       val k = index(i)
-      val pk = data(i) / docLen.toDouble
+      val pk = data(i) / nd
       var g = 0
       while (g < numGroups) {
-        val delta = piGK(g, k) - pk
-        metrics(g) -= delta * delta
+        metrics(g) += pk * (pk - 2.0 * piGK(g, k))
         g += 1
       }
       i += 1
@@ -170,6 +189,7 @@ class EuclideanGrouper(numGroups: Int,
 }
 
 class GroupContext(numGroups: Int,
+  eta: Double,
   priors: DenseVector[Double],
   burninIter: Int,
   docGrouperStr: String) extends Serializable {
@@ -190,11 +210,11 @@ class GroupContext(numGroups: Int,
       case "naivebayes" =>
         new NaiveBayesGrouper(numGroups, piGK, priors, burninIter, sampIter)
       case "kldivergence" =>
-        new KLDivergenceGrouper(numGroups, piGK)
+        new KLDivergenceGrouper(numGroups, eta, piGK)
       case "battacharyya" =>
-        new BattacharyyaGrouper(numGroups, piGK)
+        new BattacharyyaGrouper(numGroups, eta, piGK)
       case "euclidean" =>
-        new EuclideanGrouper(numGroups, piGK)
+        new EuclideanGrouper(numGroups, eta, piGK)
       case _ =>
         throw new NoSuchMethodException("Not implemented.")
     }
