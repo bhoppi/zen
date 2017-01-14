@@ -32,7 +32,7 @@ abstract class BayesianGrouper(numGroups: Int,
   priors: DenseVector[Double],
   burninIter: Int,
   sampIter: Int) extends DocGrouper {
-  private val toSample = burninIter + 10 <= sampIter
+  private val toSample = sampIter <= burninIter + 10
   private lazy val gen = new XORShiftRandom()
   private lazy val samp = new CumulativeDist[Double]().reset(numGroups)
 
