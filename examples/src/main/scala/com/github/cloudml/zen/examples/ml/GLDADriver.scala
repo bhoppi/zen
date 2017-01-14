@@ -61,7 +61,7 @@ object GLDADriver {
     conf.set(cs_numPartitions, s"$numPartitions")
     conf.set(cs_inputPath, inputPath)
     conf.set(cs_outputpath, outputPath)
-    setAppConfs(conf, options)
+    setAppOptionConfs(conf, options)
 
     if (numThreads > 1) {
       conf.set("spark.task.cpus", numThreadsStr)
@@ -145,11 +145,11 @@ object GLDADriver {
       "  Args: -numTopics=<Int> -numGroups=<Int> -eta=<Float> -mu=<Float> -alpha=<Float>\n" +
       "        -totalIter=<Int> -numPartitions=<Int>\n" +
       "  Options: -numThreads=<Int(*1)>\n" +
-      "           -burninIter=<Int(*10)>\n" +
+      "           -burninIter=<Int(*20)>\n" +
       "           -sampleRate=<Float(*1.0)>\n" +
       "           -chkptInterval=<Int(*10)> (0 or negative disables checkpoint)\n" +
       "           -evalMetric=<*None|{PPLX|LLH|COH}+>\n" +
-      "           -docGrouper=<DirMulti|(*Discrete)|Battacharyya|Euclidean>\n" +
+      "           -docGrouper=<DirMulti|NaiveBayes|(*KLDivergence)|Battacharyya|Euclidean>\n" +
       "           -saveInterval=<Int(*0)> (0 or negative disables save at intervals)\n" +
       "           -saveAsSolid=<Boolean(*true)>\n" +
       "           -labelsRate=<Float(*1.0)>\n" +

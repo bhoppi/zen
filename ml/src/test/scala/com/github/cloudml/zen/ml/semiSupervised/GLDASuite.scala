@@ -36,7 +36,7 @@ class GLDASuite extends FunSuite with SharedSparkContext {
 
   override def initSparkConf(): SparkConf = {
     val conf = super.initSparkConf()
-    setAppConfs(conf)
+    setAppOptionConfs(conf)
   }
 
   test("GLDA || Gibbs sampling") {
@@ -79,7 +79,7 @@ object GLDASuite {
   val numDocs = 100
   val expDocLen = 300
   val eta = 0.1f
-  val mu = 1e-4f
+  val mu = 0.1f
   val alpha = 0.5f
   val totalIter = 2
   val burninIter = 1

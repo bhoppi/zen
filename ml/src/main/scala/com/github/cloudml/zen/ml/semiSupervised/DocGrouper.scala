@@ -23,7 +23,7 @@ import com.github.cloudml.zen.ml.sampler.CumulativeDist
 import com.github.cloudml.zen.ml.util.XORShiftRandom
 
 
-trait DocGrouper extends Serializable {
+trait DocGrouper {
   def getGrp(docTopics: SparseVector[Int], docLen: Int): Int
 }
 
@@ -32,13 +32,14 @@ abstract class BayesianGrouper(numGroups: Int,
   priors: DenseVector[Double],
   burninIter: Int,
   sampIter: Int) extends DocGrouper {
-  protected val gen = new XORShiftRandom()
-  protected val samp = new CumulativeDist[Double]().reset(numGroups)
+  private val toSample = burninIter + 10 <= sampIter
+  private lazy val gen = new XORShiftRandom()
+  private lazy val samp = new CumulativeDist[Double]().reset(numGroups)
 
   def getGrp(docTopics: SparseVector[Int], docLen: Int): Int = {
     val llhs = priors.copy
     calcLlhs(docTopics, docLen, llhs)
-    if (sampIter <= burninIter) {
+    if (toSample) {
       llhs :-= max(llhs)
       samp.resetDist(exp(llhs).iterator, numGroups).sampleRandom(gen)
     } else {
@@ -73,7 +74,7 @@ class DirMultiGrouper(numGroups: Int,
   }
 }
 
-class DiscreteGrouper(numGroups: Int,
+class NaiveBayesGrouper(numGroups: Int,
   piGK: DenseMatrix[Float],
   priors: DenseVector[Double],
   burninIter: Int,
@@ -105,6 +106,26 @@ abstract class MetricGrouper(numGroups: Int,
   }
 
   def calcMetrics(docTopics: SparseVector[Int], docLen: Int, metrics: Array[Double]): Unit
+}
+
+class KLDivergenceGrouper(numGroups: Int,
+  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, piGK) {
+  def calcMetrics(docTopics: SparseVector[Int], docLen: Int, metrics: Array[Double]): Unit = {
+    val used = docTopics.used
+    val index = docTopics.index
+    val data = docTopics.data
+    var i = 0
+    while (i < used) {
+      val k = index(i)
+      val pk = data(i) / docLen.toDouble
+      var g = 0
+      while (g < numGroups) {
+        metrics(g) += math.sqrt(piGK(g, k) * pk)
+        g += 1
+      }
+      i += 1
+    }
+  }
 }
 
 class BattacharyyaGrouper(numGroups: Int,
@@ -148,18 +169,28 @@ class EuclideanGrouper(numGroups: Int,
   }
 }
 
-object DocGrouper {
-  def apply(dgStr: String,
-    numGroups: Int,
-    piGK: DenseMatrix[Float],
-    priors: DenseVector[Double],
-    burninIter: Int,
-    sampIter: Int): DocGrouper = {
-    dgStr.toLowerCase match {
+class GroupContext(numGroups: Int,
+  priors: DenseVector[Double],
+  burninIter: Int,
+  docGrouperStr: String) extends Serializable {
+  private var sampIter = 0
+
+  def setIteration(sampIter: Int): Unit = {
+    this.sampIter = sampIter
+  }
+
+  def isBurnin: Boolean = sampIter <= burninIter
+
+  def totalGroups: Int = if (isBurnin) numGroups + 1 else numGroups
+
+  def getDocGrouper(piGK: DenseMatrix[Float]): DocGrouper = {
+    docGrouperStr match {
       case "dirmulti" =>
         new DirMultiGrouper(numGroups, piGK, priors, burninIter, sampIter)
-      case "discrete" =>
-        new DiscreteGrouper(numGroups, piGK, priors, burninIter, sampIter)
+      case "naivebayes" =>
+        new NaiveBayesGrouper(numGroups, piGK, priors, burninIter, sampIter)
+      case "kldivergence" =>
+        new KLDivergenceGrouper(numGroups, piGK)
       case "battacharyya" =>
         new BattacharyyaGrouper(numGroups, piGK)
       case "euclidean" =>

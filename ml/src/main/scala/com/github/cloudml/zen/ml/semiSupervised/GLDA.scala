@@ -21,6 +21,7 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentLinkedQueue
 
 import breeze.linalg._
+import breeze.numerics._
 import com.github.cloudml.zen.ml.semiSupervised.GLDADefines._
 import com.github.cloudml.zen.ml.util.Concurrent._
 import com.github.cloudml.zen.ml.util._
@@ -48,6 +49,7 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
   var storageLevel: StorageLevel) extends Serializable {
 
   @transient var globalVarsBc: Broadcast[GlobalVars] = _
+  @transient var groupContext: GroupContext = _
   @transient lazy val seed = new XORShiftRandom().nextInt()
   @transient var dataCpFile: String = _
   @transient var paraCpFile: String = _
@@ -62,6 +64,15 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
     initParaBlocks.count()
     paraBlocks.unpersist(blocking=false)
     paraBlocks = initParaBlocks
+
+    val globalVars = algo.collectGlobalVariables(dataBlocks, params, numGroups + 1)
+    globalVarsBc = scContext.broadcast(globalVars)
+
+    val burninIter = scConf.get(cs_burninIter).toInt
+    val docGrouperStr = scConf.get(cs_docGrouper).toLowerCase
+    val priors = log(convert(globalVars.dG.slice(0, numGroups), Double) :+= 1.0)
+    groupContext = new GroupContext(numGroups, priors, burninIter, docGrouperStr)
+
     this
   }
 
@@ -69,52 +80,48 @@ class GLDA(@transient var dataBlocks: RDD[(Int, DataBlock)],
     val evalMetrics = scConf.get(cs_evalMetric).split(raw"\+")
     val toEval = !evalMetrics.contains("none")
     val saveIntv = scConf.get(cs_saveInterval).toInt
-    if (toEval) {
-      println("Before Gibbs sampling:")
-      val globalVars = algo.collectGlobalVariables(dataBlocks, params, numTerms)
-      globalVarsBc = scContext.broadcast(globalVars)
-      GLDAMetrics(this, evalMetrics).foreach(_.output(println))
-      globalVarsBc.unpersist(blocking=false)
-    }
-    val burninIter = scConf.get(cs_burninIter).toInt
     val chkptIntv = scConf.get(cs_chkptInterval).toInt
     val canChkpt = chkptIntv > 0 && scContext.getCheckpointDir.isDefined
-    for (iter <- 1 to totalIter) {
-      println(s"\nStart Gibbs sampling (Iteration $iter/$totalIter)")
-      val startedAt = System.nanoTime
-      val needChkpt = canChkpt && iter % chkptIntv == 1
 
-      val globalVars = algo.collectGlobalVariables(dataBlocks, params, numTerms)
+    if (toEval) {
+      println("Before Gibbs sampling:")
+      GLDAMetrics(this, evalMetrics).foreach(_.output(println))
+    }
+    for (sampIter <- 1 to totalIter) {
+      println(s"\nStart Gibbs sampling (Iteration $sampIter/$totalIter)")
+      val startedAt = System.nanoTime
+
+      groupContext.setIteration(sampIter)
+      fitIteration(sampIter, canChkpt && sampIter % chkptIntv == 1)
+      if (toEval) {
+        GLDAMetrics(this, evalMetrics).foreach(_.output(println))
+      }
+      val globalVars = algo.collectGlobalVariables(dataBlocks, params, groupContext.totalGroups)
+      globalVarsBc.unpersist(blocking=false)
+      globalVarsBc = scContext.broadcast(globalVars)
       val countTok = sum(convert(globalVars.nK, Long))
       val countDoc = sum(globalVars.dG)
       assert(countTok == numTokens && countDoc == numDocs, s"countTok=$countTok, countDoc=$countDoc")
       println(s"dG: ${globalVars.dG}")
-      globalVarsBc = scContext.broadcast(globalVars)
-      fitIteration(iter, burninIter, needChkpt)
-      if (toEval) {
-        GLDAMetrics(this, evalMetrics).foreach(_.output(println))
-      }
-      globalVarsBc.unpersist(blocking=false)
 
-      if (saveIntv > 0 && iter % saveIntv == 0 && iter < totalIter) {
+      if (saveIntv > 0 && sampIter % saveIntv == 0 && sampIter < totalIter) {
         val model = toGLDAModel
-        val savPath = new Path(scConf.get(cs_outputpath) + s"-iter$iter")
+        val savPath = new Path(scConf.get(cs_outputpath) + s"-iter$sampIter")
         val fs = SparkUtils.getFileSystem(scConf, savPath)
         fs.delete(savPath, true)
         model.save(scContext, savPath.toString)
-        println(s"Model saved after Iteration $iter")
+        println(s"Model saved after Iteration $sampIter")
       }
       val elapsedSeconds = (System.nanoTime - startedAt) / 1e9
-      println(s"End Gibbs sampling (Iteration $iter/$totalIter) takes total: $elapsedSeconds secs")
+      println(s"End Gibbs sampling (Iteration $sampIter/$totalIter) takes total: $elapsedSeconds secs")
     }
   }
 
-  def fitIteration(sampIter: Int, burninIter: Int, needChkpt: Boolean): Unit = {
-    val dgStr = scConf.get(cs_docGrouper)
+  def fitIteration(sampIter: Int, needChkpt: Boolean): Unit = {
     val startedAt = System.nanoTime
     val shippeds = algo.ShipParaBlocks(dataBlocks, paraBlocks)
-    val newDataBlocks = algo.SampleNGroup(dataBlocks, shippeds, globalVarsBc, numTerms, params, seed,
-      sampIter, burninIter, dgStr)
+    val newDataBlocks = algo.SampleNGroup(dataBlocks, shippeds, globalVarsBc, numTerms, params, groupContext,
+      seed, sampIter)
     newDataBlocks.persist(storageLevel).setName(s"DataBlocks-$sampIter")
     if (needChkpt) {
       newDataBlocks.checkpoint()
@@ -246,7 +253,7 @@ object GLDA {
     }).reduce(_ + _)
     println(s"tokens in the corpus: $numTokens")
 
-    val algo = new GLDATrainer(numTopics, numGroups, numThreads)
+    val algo = new GLDATrainer(numTopics, numThreads)
     val glda = new GLDA(dataBlocks, paraBlocks, numTopics, numGroups, numThreads, numTerms, numDocs, numTokens,
       params, algo, storageLevel)
     glda.init()

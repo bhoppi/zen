@@ -199,8 +199,7 @@ object GLDAMetrics {
     evalMetrics: Array[String]): Array[GLDAMetrics] = {
     evalMetrics.map { evalMetric =>
       val ldaMetric = evalMetric match {
-        case "pplx" =>
-          new GLDAPerplexity(glda)
+        case "pplx" => new GLDAPerplexity(glda)
       }
       ldaMetric.calc()
     }

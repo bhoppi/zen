@@ -52,12 +52,12 @@ object GLDADefines {
   val cs_saveAsSolid = "zen.glda.saveAsSolid"
   val cs_labelsRate = "zen.glda.labelsRate"
 
-  def setAppConfs(conf: SparkConf, options: OptionMap = Map()): SparkConf ={
-    conf.set(cs_burninIter, options.getOrElse("burniniter", "10"))
+  def setAppOptionConfs(conf: SparkConf, options: OptionMap = Map()): SparkConf ={
+    conf.set(cs_burninIter, options.getOrElse("burniniter", "20"))
     conf.set(cs_sampleRate, options.getOrElse("samplerate", "1.0"))
     conf.set(cs_chkptInterval, options.getOrElse("chkptinterval", "10"))
     conf.set(cs_evalMetric, options.getOrElse("evalmetric", "none"))
-    conf.set(cs_docGrouper, options.getOrElse("docgrouper", "discrete"))
+    conf.set(cs_docGrouper, options.getOrElse("docgrouper", "kldivergence"))
     conf.set(cs_saveInterval, options.getOrElse("saveinterval", "0"))
     conf.set(cs_saveAsSolid, options.getOrElse("saveassolid", "true"))
     conf.set(cs_labelsRate, options.getOrElse("labelsrate", "1.0"))
