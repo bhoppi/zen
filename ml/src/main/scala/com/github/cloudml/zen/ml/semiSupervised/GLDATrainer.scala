@@ -154,7 +154,7 @@ class GLDATrainer(numTopics: Int, numThreads: Int)
               p += 2
             }
           }
-        })
+        }, closing=true)
         endTime = System.nanoTime
         elapsed = (endTime - startTime) / 1e9
         println(s"(Iteration $sampIter): Sampling tokens takes: ${elapsed}s.")
