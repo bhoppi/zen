@@ -19,18 +19,17 @@ package com.github.cloudml.zen.ml.recommendation
 
 import java.util.{Random => JavaRandom}
 
-import com.github.cloudml.zen.ml.partitioner._
+import scala.math._
+
+import com.github.cloudml.zen.ml.partitioner.DBHPartitioner
 import com.github.cloudml.zen.ml.recommendation.FM._
 import com.github.cloudml.zen.ml.util.SparkUtils._
+import com.github.cloudml.zen.ml.util.{Logging, Utils, XORShiftRandom}
 import org.apache.spark.graphx2._
 import org.apache.spark.graphx2.impl.{EdgeRDDImpl, GraphImpl}
-import com.github.cloudml.zen.ml.util.{XORShiftRandom, Utils}
-import org.apache.spark.{SparkContext, Logging}
 import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
-
-import scala.math._
 
 /**
  * Factorization Machines 公式定义:
@@ -207,7 +206,6 @@ private[ml] abstract class FM extends Serializable with Logging {
     if (useAdaGrad) {
       val rho = math.exp(-math.log(2.0) / halfLife)
       val (newW0Grad, newW0Sum, delta) = adaGrad(gradientSum, gradient, epsilon, 1.0)
-      // val (newW0Grad, newW0Sum, delta) = esgd(gradientSum, gradient, epsilon, iter)
       checkpointGradientSum(delta)
       delta.setName(s"delta-$iter").persist(storageLevel).count()
 
@@ -257,41 +255,6 @@ private[ml] abstract class FM extends Serializable with Logging {
 
     val newW0Sum = w0Sum * rho + pow(w0Grad, 2)
     val newW0Grad = w0Grad / (epsilon + sqrt(newW0Sum))
-
-    (newW0Grad, newW0Sum, newGradSumWithoutW0)
-  }
-
-  protected def esgd(
-    gradientSum: (Double, VertexRDD[Array[Double]]),
-    gradient: (Double, VertexRDD[Array[Double]]),
-    epsilon: Double,
-    iter: Int): (Double, Double, VertexRDD[(Array[Double], Array[Double])]) = {
-    val delta = if (gradientSum == null) {
-      features.mapValues(t => t.map(x => 0.0))
-    }
-    else {
-      gradientSum._2
-    }
-    val newGradSumWithoutW0 = delta.leftJoin(gradient._2) { (_, gradSum, g) =>
-      g match {
-        case Some(grad) =>
-          val gradLen = grad.length
-          val newGradSum = new Array[Double](gradLen)
-          val newGrad = new Array[Double](gradLen)
-          for (i <- 0 until gradLen) {
-            newGradSum(i) = gradSum(i) + pow(Utils.random.nextGaussian() * grad(i), 2)
-            newGrad(i) = grad(i) / (epsilon + sqrt(newGradSum(i) / iter))
-          }
-          (newGrad, newGradSum)
-        case _ => (null, gradSum)
-      }
-
-    }
-    val w0Sum = if (gradientSum == null) 0.0 else gradientSum._1
-    val w0Grad = gradient._1
-
-    val newW0Sum = w0Sum + pow(Utils.random.nextGaussian() * w0Grad, 2)
-    val newW0Grad = w0Grad / (epsilon + sqrt(newW0Sum / iter))
 
     (newW0Grad, newW0Sum, newGradSumWithoutW0)
   }
@@ -622,13 +585,5 @@ object FM {
     m
   }
 
-  private[ml] def sumInterval(rank: Int, arr: Array[Double]): VD = {
-    val result = new Array[Double](rank + 1)
-    var i = 1
-    while (i <= rank) {
-      result(i) = arr(i)
-      i += 1
-    }
-    result
-  }
+  private[ml] def sumInterval(rank: Int, arr: Array[Double]): VD = arr.slice(0, rank + 1)
 }
