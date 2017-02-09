@@ -19,7 +19,7 @@ package com.github.cloudml.zen.examples.ml
 
 import com.github.cloudml.zen.ml.semiSupervised.GLDA
 import com.github.cloudml.zen.ml.semiSupervised.GLDADefines._
-import com.github.cloudml.zen.ml.util.{SparkHacker, SparkUtils}
+import com.github.cloudml.zen.ml.util.SparkUtils
 import org.apache.hadoop.fs.Path
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
@@ -129,7 +129,6 @@ object GLDADriver {
     totalIter: Int,
     params: HyperParams,
     storageLevel: StorageLevel): Double = {
-    SparkHacker.gcCleaner(30 * 60, 30 * 60, "GLDA_gcCleaner")
     val trainingStartedTime = System.nanoTime
     val glda = GLDA(corpus, numTopics, numGroups, numThreads, params, storageLevel)
     glda.fit(totalIter)
