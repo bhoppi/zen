@@ -53,11 +53,11 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
     val totalLlh = isoRDD.zipPartitions(shippeds, preservesPartitioning=true) { (dataIter, shpsIter) =>
       dataIter.map { case (_, DataBlock(termRecs, docRecs)) =>
         val totalDocSize = docRecs.length
-        implicit val es = newExecutionContext(numThreads)
+        implicit val pec = newParaExecutionContext(numThreads)
 
         // Stage 1: assign all termTopics
         val termVecs = new TrieMap[Int, CompressedVector]()
-        parallelized_foreachElement[(Int, ShippedAttrsBlock)](shpsIter, numThreads, (shp, _) => {
+        parallelized_foreachElement[(Int, ShippedAttrsBlock)](shpsIter, shp => {
           val (_, ShippedAttrsBlock(termIds, termAttrs)) = shp
           termIds.iterator.zip(termAttrs.iterator).foreach { case (termId, termAttr) =>
             termVecs(termId) = termAttr
@@ -66,9 +66,8 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
 
         // Stage 2: calculate all docTopics, docLen, docGrp
         val docResults = new Array[(SparseVector[Int], Int, Int)](totalDocSize)
-        parallelized_foreachSplit(totalDocSize, numThreads, (ds, dn, _) => {
-          var di = ds
-          while (di < dn) {
+        parallelized_foreachSplit(totalDocSize, (ds, dn, _) =>
+          for (di <- ds until dn) {
             val DocRec(_, docGrp, docData) = docRecs(di)
             val docTopics = SparseVector.zeros[Int](numTopics)
             var p = 0
@@ -88,9 +87,8 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
             }
             docTopics.compact()
             docResults(di) = (docTopics, sum(docTopics), docGrp.value & 0xFFFF)
-            di += 1
           }
-        })
+        )
 
         // Stage 3: Calc perplexity
         val eta = params.eta
@@ -99,7 +97,7 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
         val decomps = Array.fill(numThreads)(new BVDecompressor(numTopics))
         val GlobalVars(piGK, nK, _) = globalVarsBc.value
         val megSums = calcSum_megDenses(piGK, eta, mu_term)
-        parallelized_reduceBatch[TermRec, Double](termRecs.iterator, numThreads, 100, (batch, _, thid) => {
+        parallelized_reduceBatch[TermRec, Double](termRecs.iterator, 100, (batch, thid) => {
           val decomp = decomps(thid)
           var llhSum = 0.0
           batch.foreach { termRec =>

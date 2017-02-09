@@ -29,38 +29,52 @@ object Concurrent extends Serializable {
 
   type ThID = Int
 
-  def newExecutionContext(numThreads: Int): ExecutionContextExecutorService = {
-    initExecutionContext(numThreads)
+  case class ParaExecutionContext(nThreads: Int, es: ExecutionContextExecutorService)
+
+  def newParaExecutionContext(nThreads: Int): ParaExecutionContext = {
+    ParaExecutionContext(nThreads, initExecutionContext(nThreads))
   }
 
   // coarse-grained multi-threading, simple
   def parallelized_foreachSplit(totalSize: Int,
-    nThreads: Int,
     funcThrd: (Int, Int, ThID) => Unit,
-    closing: Boolean = false)(implicit es: ExecutionContextExecutorService): Unit = {
+    closing: Boolean = false)(implicit pec: ParaExecutionContext): Unit = {
+    val nThreads = pec.nThreads
+    implicit val ec = pec.es
     val sizePerThrd = {
       val npt = totalSize / nThreads
       if (npt * nThreads == totalSize) npt else npt + 1
     }
-    val all = Range(0, nThreads).map(thid => withFuture {
-      val is = sizePerThrd * thid
-      val in = math.min(is + sizePerThrd, totalSize)
-      funcThrd(is, in, thid)
-    })
+    val all = for (thid <- 0 until nThreads) yield withFuture {
+      val ss = sizePerThrd * thid
+      val sn = math.min(ss + sizePerThrd, totalSize)
+      funcThrd(ss, sn, thid)
+    }
     val bf = if (closing) withAwaitReadyAndClose[IndexedSeq[Unit]] _ else withAwaitReady[IndexedSeq[Unit]] _
     bf(Future.sequence(all))
   }
 
   // work-stealing mode multi-threading, more load-balanced
   def parallelized_foreachElement[T](totalIter: Iterator[T],
-    nThreads: Int,
-    funcThrd: (T, ThID) => Unit,
-    closing: Boolean = false)(implicit es: ExecutionContextExecutorService): Unit = {
-    val thq = new ConcurrentLinkedQueue(1 to nThreads)
-    val all = totalIter.map(e => withFuture {
+    funcThrd: T => Unit,
+    closing: Boolean = false)(implicit pec: ParaExecutionContext): Unit = {
+    implicit val ec = pec.es
+    val all = for (e <- totalIter) yield withFuture(funcThrd(e))
+    val bf = if (closing) withAwaitReadyAndClose[Iterator[Unit]] _ else withAwaitReady[Iterator[Unit]] _
+    bf(Future.sequence(all))
+  }
+
+  // mini-batch between coarse-grained & work-stealing, most efficient
+  def parallelized_foreachBatch[T](totalIter: Iterator[T],
+    nBatch: Int,
+    funcThrd: (Seq[T], ThID) => Unit,
+    closing: Boolean = false)(implicit pec: ParaExecutionContext): Unit = {
+    implicit val ec = pec.es
+    val thq = new ConcurrentLinkedQueue(1 to pec.nThreads)
+    val all = totalIter.grouped(nBatch).map(batch => withFuture {
       val thid = thq.poll() - 1
       try {
-        funcThrd(e, thid)
+        funcThrd(batch, thid)
       } finally {
         thq.add(thid + 1)
       }
@@ -69,86 +83,64 @@ object Concurrent extends Serializable {
     bf(Future.sequence(all))
   }
 
-  // mini-batch between coarse-grained & work-stealing, most efficient
-  def parallelized_foreachBatch[T](totalIter: Iterator[T],
-    nThreads: Int,
-    nBatch: Int,
-    funcThrd: (Seq[T], Int, ThID) => Unit,
-    closing: Boolean = false)(implicit es: ExecutionContextExecutorService): Unit = {
-    val thq = new ConcurrentLinkedQueue(1 to nThreads)
-    val all = totalIter.grouped(nBatch).zipWithIndex.map { case (batch, bi) =>
-      withFuture {
-        val thid = thq.poll() - 1
-        try {
-          funcThrd(batch, bi, thid)
-        } finally {
-          thq.add(thid + 1)
-        }
-      }
-    }
-    val bf = if (closing) withAwaitReadyAndClose[Iterator[Unit]] _ else withAwaitReady[Iterator[Unit]] _
-    bf(Future.sequence(all))
-  }
-
   def parallelized_mapElement[T, U](totalIter: Iterator[T],
-    nThreads: Int,
     funcThrd: T => U,
-    closing: Boolean = false)(implicit es: ExecutionContextExecutorService): Iterator[U] = {
-    val all = totalIter.map(e => withFuture(funcThrd(e)))
+    closing: Boolean = false)(implicit pec: ParaExecutionContext): Iterator[U] = {
+    implicit val ec = pec.es
+    val all = for (e <- totalIter) yield withFuture(funcThrd(e))
     val bf = if (closing) withAwaitResultAndClose[Iterator[U]] _ else withAwaitResult[Iterator[U]] _
     bf(Future.sequence(all))
   }
 
   def parallelized_mapBatch[T, U](totalIter: Iterator[T],
-    nThreads: Int,
     funcThrd: T => U,
-    closing: Boolean = false)(implicit es: ExecutionContextExecutorService): Iterator[U] = {
-    totalIter.grouped(nThreads).flatMap { batch =>
+    closing: Boolean = false)(implicit pec: ParaExecutionContext): Iterator[U] = {
+    implicit val ec = pec.es
+    totalIter.grouped(pec.nThreads).flatMap { batch =>
       val all = Future.traverse(batch)(e => withFuture(funcThrd(e)))
       withAwaitResult(all)
     } ++ {
       if (closing) {
-        closeExecutionContext(es)
+        closeExecutionContext(ec)
       }
       Iterator.empty
     }
   }
 
   def parallelized_reduceSplit[U](totalSize: Int,
-    nThreads: Int,
-    funcThrd: (Int, Int) => U,
+    funcThrd: (Int, Int, ThID) => U,
     reducer: (U, U) => U,
-    closing: Boolean = false)(implicit es: ExecutionContextExecutorService): U = {
+    closing: Boolean = false)(implicit pec: ParaExecutionContext): U = {
+    val nThreads = pec.nThreads
+    implicit val ec = pec.es
     val sizePerThrd = {
       val npt = totalSize / nThreads
       if (npt * nThreads == totalSize) npt else npt + 1
     }
-    val all = Range(0, nThreads).map(thid => withFuture {
-      val is = sizePerThrd * thid
-      val in = math.min(is + sizePerThrd, totalSize)
-      funcThrd(is, in)
-    })
+    val all = for (thid <- 0 until nThreads) yield withFuture {
+      val ss = sizePerThrd * thid
+      val sn = math.min(ss + sizePerThrd, totalSize)
+      funcThrd(ss, sn, thid)
+    }
     val bf = if (closing) withAwaitResultAndClose[U] _ else withAwaitResult[U] _
     bf(Future.reduce(all)(reducer))
   }
 
   def parallelized_reduceBatch[T, U](totalIter: Iterator[T],
-    nThreads: Int,
     nBatch: Int,
-    funcThrd: (Seq[T], Int, ThID) => U,
+    funcThrd: (Seq[T], ThID) => U,
     reducer: (U, U) => U,
-    closing: Boolean = false)(implicit es: ExecutionContextExecutorService): U = {
-    val thq = new ConcurrentLinkedQueue(1 to nThreads)
-    val all = totalIter.grouped(nBatch).zipWithIndex.map { case (batch, bi) =>
-      withFuture {
-        val thid = thq.poll() - 1
-        try {
-          funcThrd(batch, bi, thid)
-        } finally {
-          thq.add(thid + 1)
-        }
+    closing: Boolean = false)(implicit pec: ParaExecutionContext): U = {
+    implicit val ec = pec.es
+    val thq = new ConcurrentLinkedQueue(1 to pec.nThreads)
+    val all = totalIter.grouped(nBatch).map(batch => withFuture {
+      val thid = thq.poll() - 1
+      try {
+        funcThrd(batch, thid)
+      } finally {
+        thq.add(thid + 1)
       }
-    }
+    })
     val bf = if (closing) withAwaitResultAndClose[U] _ else withAwaitResult[U] _
     bf(Future.reduce(all)(reducer))
   }
@@ -178,8 +170,8 @@ object SimpleConcurrentBackend extends Serializable {
     res
   }
 
-  @inline def initExecutionContext(numThreads: Int): ExecutionContextExecutorService = {
-    ExecutionContext.fromExecutorService(Executors.newFixedThreadPool(numThreads))
+  @inline def initExecutionContext(nThreads: Int): ExecutionContextExecutorService = {
+    ExecutionContext.fromExecutorService(Executors.newFixedThreadPool(nThreads))
   }
 
   @inline def closeExecutionContext(es: ExecutionContextExecutorService): Unit = {
@@ -218,8 +210,8 @@ object DebugConcurrentBackend extends Serializable {
     Await.result(future, 1.hour)
   }
 
-  def initExecutionContext(numThreads: Int): ExecutionContextExecutorService = {
-    val es = new ThreadPoolExecutor(numThreads, numThreads, 0L, MILLISECONDS, new LinkedBlockingQueue[Runnable],
+  def initExecutionContext(nThreads: Int): ExecutionContextExecutorService = {
+    val es = new ThreadPoolExecutor(nThreads, nThreads, 0L, MILLISECONDS, new LinkedBlockingQueue[Runnable],
       Executors.defaultThreadFactory, new ThreadPoolExecutor.AbortPolicy)
     ExecutionContext.fromExecutorService(es)
   }
