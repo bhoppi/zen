@@ -98,14 +98,9 @@ class NaiveBayesGrouper(numGroups: Int,
 }
 
 abstract class MetricGrouper(numGroups: Int,
-  eta: Double,
   piGK: DenseMatrix[Float]) extends DocGrouper {
-  private val bases = calcBases()
-
-  def calcBases(): DenseVector[Double] = DenseVector.zeros[Double](numGroups)
-
   def getGrp(docTopics: SparseVector[Int], docLen: Int): Int = {
-    val metrics = bases.copy
+    val metrics = DenseVector.zeros[Double](numGroups)
     calcMetrics(docTopics, docLen.toDouble, metrics)
     argmin(metrics)
   }
@@ -114,11 +109,7 @@ abstract class MetricGrouper(numGroups: Int,
 }
 
 class KLDivergenceGrouper(numGroups: Int,
-  eta: Double,
-  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, eta, piGK) {
-  private val ln1pe = math.log(1.0 + eta)
-  private val elned1pe = eta * (math.log(eta) - ln1pe)
-
+  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, piGK) {
   def calcMetrics(docTopics: SparseVector[Int], nd: Double, metrics: DenseVector[Double]): Unit = {
     val used = docTopics.used
     val index = docTopics.index
@@ -129,9 +120,7 @@ class KLDivergenceGrouper(numGroups: Int,
       val pk = data(i) / nd
       var g = 0
       while (g < numGroups) {
-        val pigk = piGK(g, k)
-        val rk = pk / pigk + eta
-        metrics(g) += (rk * (math.log(rk) - ln1pe) - elned1pe) * pigk
+        metrics(g) += pk * math.log(pk / piGK(g, k))
         g += 1
       }
       i += 1
@@ -140,10 +129,7 @@ class KLDivergenceGrouper(numGroups: Int,
 }
 
 class BattacharyyaGrouper(numGroups: Int,
-  eta: Double,
-  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, eta, piGK) {
-  private val sqrt_eta = math.sqrt(eta)
-
+  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, piGK) {
   def calcMetrics(docTopics: SparseVector[Int], nd: Double, metrics: DenseVector[Double]): Unit = {
     val used = docTopics.used
     val index = docTopics.index
@@ -154,8 +140,7 @@ class BattacharyyaGrouper(numGroups: Int,
       val pk = data(i) / nd
       var g = 0
       while (g < numGroups) {
-        val pigk = piGK(g, k)
-        metrics(g) += (sqrt_eta - math.sqrt(pk / pigk + eta)) * pigk
+        metrics(g) -= math.sqrt(pk * piGK(g, k))
         g += 1
       }
       i += 1
@@ -164,12 +149,7 @@ class BattacharyyaGrouper(numGroups: Int,
 }
 
 class EuclideanGrouper(numGroups: Int,
-  eta: Double,
-  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, eta, piGK) {
-  override def calcBases(): DenseVector[Double] = {
-    convert(sum(piGK :* piGK, Axis._1).slice(0, numGroups), Double)
-  }
-
+  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, piGK) {
   def calcMetrics(docTopics: SparseVector[Int], nd: Double, metrics: DenseVector[Double]): Unit = {
     val used = docTopics.used
     val index = docTopics.index
@@ -180,7 +160,8 @@ class EuclideanGrouper(numGroups: Int,
       val pk = data(i) / nd
       var g = 0
       while (g < numGroups) {
-        metrics(g) += pk * (pk - 2.0 * piGK(g, k))
+        val delta = pk - piGK(g, k)
+        metrics(g) += delta * delta
         g += 1
       }
       i += 1
@@ -189,7 +170,6 @@ class EuclideanGrouper(numGroups: Int,
 }
 
 class GroupContext(numGroups: Int,
-  eta: Double,
   priors: DenseVector[Double],
   burninIter: Int,
   docGrouperStr: String) extends Serializable {
@@ -210,11 +190,11 @@ class GroupContext(numGroups: Int,
       case "naivebayes" =>
         new NaiveBayesGrouper(numGroups, piGK, priors, burninIter, sampIter)
       case "kldivergence" =>
-        new KLDivergenceGrouper(numGroups, eta, piGK)
+        new KLDivergenceGrouper(numGroups, piGK)
       case "battacharyya" =>
-        new BattacharyyaGrouper(numGroups, eta, piGK)
+        new BattacharyyaGrouper(numGroups, piGK)
       case "euclidean" =>
-        new EuclideanGrouper(numGroups, eta, piGK)
+        new EuclideanGrouper(numGroups, piGK)
       case _ =>
         throw new NoSuchMethodException("Not implemented.")
     }
