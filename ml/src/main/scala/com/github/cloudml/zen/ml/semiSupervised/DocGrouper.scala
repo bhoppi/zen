@@ -98,18 +98,29 @@ class NaiveBayesGrouper(numGroups: Int,
 }
 
 abstract class MetricGrouper(numGroups: Int,
-  piGK: DenseMatrix[Float]) extends DocGrouper {
+  piGK: DenseMatrix[Float],
+  burninIter: Int,
+  sampIter: Int) extends DocGrouper {
+  private val toSample = sampIter <= burninIter + 1
+  private lazy val gen = new XORShiftRandom()
+
   def getGrp(docTopics: SparseVector[Int], docLen: Int): Int = {
     val metrics = DenseVector.zeros[Double](numGroups)
     calcMetrics(docTopics, docLen.toDouble, metrics)
-    argmin(metrics)
+    if (toSample) {
+      gen.nextInt(numGroups)
+    } else {
+      argmin(metrics)
+    }
   }
 
   def calcMetrics(docTopics: SparseVector[Int], nd: Double, metrics: DenseVector[Double]): Unit
 }
 
 class KLDivergenceGrouper(numGroups: Int,
-  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, piGK) {
+  piGK: DenseMatrix[Float],
+  burninIter: Int,
+  sampIter: Int) extends MetricGrouper(numGroups, piGK, burninIter, sampIter) {
   def calcMetrics(docTopics: SparseVector[Int], nd: Double, metrics: DenseVector[Double]): Unit = {
     val used = docTopics.used
     val index = docTopics.index
@@ -129,7 +140,9 @@ class KLDivergenceGrouper(numGroups: Int,
 }
 
 class BattacharyyaGrouper(numGroups: Int,
-  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, piGK) {
+  piGK: DenseMatrix[Float],
+  burninIter: Int,
+  sampIter: Int) extends MetricGrouper(numGroups, piGK, burninIter, sampIter) {
   def calcMetrics(docTopics: SparseVector[Int], nd: Double, metrics: DenseVector[Double]): Unit = {
     val used = docTopics.used
     val index = docTopics.index
@@ -149,7 +162,9 @@ class BattacharyyaGrouper(numGroups: Int,
 }
 
 class EuclideanGrouper(numGroups: Int,
-  piGK: DenseMatrix[Float]) extends MetricGrouper(numGroups, piGK) {
+  piGK: DenseMatrix[Float],
+  burninIter: Int,
+  sampIter: Int) extends MetricGrouper(numGroups, piGK, burninIter, sampIter) {
   def calcMetrics(docTopics: SparseVector[Int], nd: Double, metrics: DenseVector[Double]): Unit = {
     val used = docTopics.used
     val index = docTopics.index
@@ -190,11 +205,11 @@ class GroupContext(numGroups: Int,
       case "naivebayes" =>
         new NaiveBayesGrouper(numGroups, piGK, priors, burninIter, sampIter)
       case "kldivergence" =>
-        new KLDivergenceGrouper(numGroups, piGK)
+        new KLDivergenceGrouper(numGroups, piGK, burninIter, sampIter)
       case "battacharyya" =>
-        new BattacharyyaGrouper(numGroups, piGK)
+        new BattacharyyaGrouper(numGroups, piGK, burninIter, sampIter)
       case "euclidean" =>
-        new EuclideanGrouper(numGroups, piGK)
+        new EuclideanGrouper(numGroups, piGK, burninIter, sampIter)
       case _ =>
         throw new NoSuchMethodException("Not implemented.")
     }
