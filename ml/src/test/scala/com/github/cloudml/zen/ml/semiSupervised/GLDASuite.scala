@@ -44,7 +44,7 @@ class GLDASuite extends FunSuite with SharedSparkContext {
     val bowDocs = sampleBowDocs(model)
     val bowDocsRDD = sc.parallelize(bowDocs, 2)
 
-    val corpus = GLDA.initCorpus(bowDocsRDD, numTopics, numGroups, storageLevel)
+    val corpus = GLDA.initCorpus(bowDocsRDD, numTopics, numGroups, numThreads, storageLevel)
     val params = HyperParams(eta, mu, alpha)
     val glda = GLDA(corpus, numTopics, numGroups, numThreads, params, storageLevel)
 

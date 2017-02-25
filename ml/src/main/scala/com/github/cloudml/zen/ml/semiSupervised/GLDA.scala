@@ -18,6 +18,7 @@
 package com.github.cloudml.zen.ml.semiSupervised
 
 import java.io.IOException
+import java.util.Random
 import java.util.concurrent.ConcurrentLinkedQueue
 
 import breeze.linalg._
@@ -262,14 +263,15 @@ object GLDA {
     labelsRate: Float,
     storageLevel: StorageLevel): (RDD[(Int, DataBlock)], RDD[(Int, ParaBlock)]) = {
     val bowDocsRDD = GLDA.parseRawDocs(rawDocsRDD, numGroups, numThreads, labelsRate)
-    initCorpus(bowDocsRDD, numTopics, numThreads, storageLevel)
+    initCorpus(bowDocsRDD, numTopics, numGroups, numThreads, storageLevel)
   }
 
   def initCorpus(bowDocsRDD: RDD[DocBow],
     numTopics: Int,
+    numGroups: Int,
     numThreads: Int,
     storageLevel: StorageLevel): (RDD[(Int, DataBlock)], RDD[(Int, ParaBlock)]) = {
-    val dataBlocks = GLDA.convertBowDocs(bowDocsRDD, numTopics, numThreads)
+    val dataBlocks = GLDA.convertBowDocs(bowDocsRDD, numTopics, numGroups, numThreads)
     dataBlocks.persist(storageLevel).setName("DataBlocks-0")
     val paraBlocks = GLDA.buildParaBlocks(dataBlocks)
     (dataBlocks, paraBlocks)
@@ -314,6 +316,7 @@ object GLDA {
 
   def convertBowDocs(bowDocsRDD: RDD[DocBow],
     numTopics: Int,
+    numGroups: Int,
     numThreads: Int): RDD[(Int, DataBlock)] = {
     val numParts = bowDocsRDD.partitions.length
     bowDocsRDD.mapPartitionsWithIndex { (pid, iter) =>
@@ -321,6 +324,19 @@ object GLDA {
       val totalDocSize = docs.length
       val docRecs = new Array[DocRec](totalDocSize)
       val termSet = new TrieMap[Int, Int]()
+
+      val npg = numTopics / numGroups
+      def randTopic(docGrp: Int, gen: Random): Int = {
+        if (docGrp >= 0x10000) {
+          val grp = docGrp & 0xFFFF
+          val start = npg * grp
+          val span = if (grp < numGroups - 1) npg else numTopics - start
+          start + gen.nextInt(span)
+        } else {
+          gen.nextInt(numTopics)
+        }
+      }
+
       implicit val pec = newParaExecutionContext(numThreads)
 
       parallelized_foreachSplit(totalDocSize, (ds, dn, thid) => {
@@ -331,13 +347,13 @@ object GLDA {
           docTerms.activeIterator.foreach { case (termId, termCnt) =>
             if (termCnt == 1) {
               docData += termId
-              docData += gen.nextInt(numTopics)
+              docData += randTopic(docGrp, gen)
             } else if (termCnt > 1) {
               docData += -termCnt
               docData += termId
               var c = 0
               while (c < termCnt) {
-                docData += gen.nextInt(numTopics)
+                docData += randTopic(docGrp, gen)
                 c += 1
               }
             }
