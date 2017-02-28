@@ -327,7 +327,7 @@ object GLDA {
 
       val npg = numTopics / numGroups
       def randTopic(docGrp: Int, gen: Random): Int = {
-        if (docGrp >= 0x10000) {
+        if (docGrp >= 0x10000 && gen.nextDouble() < 0.05) {
           val grp = docGrp & 0xFFFF
           val start = npg * grp
           val span = if (grp < numGroups - 1) npg else numTopics - start
