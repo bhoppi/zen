@@ -148,7 +148,7 @@ object GLDADriver {
       "           -burninIter=<Int(*20)>\n" +
       "           -sampleRate=<Float(*1.0)>\n" +
       "           -chkptInterval=<Int(*10)> (0 or negative disables checkpoint)\n" +
-      "           -evalMetric=<*None|{PPLX|LLH|COH}+>\n" +
+      "           -evalMetric=<*None|{PPLX|LLH}+>\n" +
       "           -docGrouper=<DirMulti|NaiveBayes|KLDivergence|(*Battacharyya)|Euclidean>\n" +
       "           -saveInterval=<Int(*0)> (0 or negative disables save at intervals)\n" +
       "           -saveAsSolid=<Boolean(*true)>\n" +
