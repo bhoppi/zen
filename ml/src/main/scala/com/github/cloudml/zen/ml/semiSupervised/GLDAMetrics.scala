@@ -18,6 +18,7 @@
 package com.github.cloudml.zen.ml.semiSupervised
 
 import breeze.linalg._
+import breeze.numerics.lgamma
 import com.github.cloudml.zen.ml.semiSupervised.GLDADefines._
 import com.github.cloudml.zen.ml.util.Concurrent._
 import com.github.cloudml.zen.ml.util.{BVDecompressor, CompressedVector}
@@ -192,12 +193,93 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
   }
 }
 
+class GLDALogLikelihood(glda: GLDA) extends GLDAMetrics(glda) {
+  var _calculated = false
+  var wllh = 0.0
+  var dllh = 0.0
+
+  override def getTotal: Double = wllh + dllh
+
+  override def calc(): GLDALogLikelihood = {
+    val dataBlocks = glda.dataBlocks
+    val paraBlocks = glda.paraBlocks
+    val numTopics = glda.numTopics
+    val numThreads = glda.numThreads
+    val numTerms = glda.numTerms
+    val numDocs = glda.numDocs
+    val params = glda.params
+    val globalVarsBc = glda.globalVarsBc
+
+    val shippeds = glda.algo.ShipParaBlocks(dataBlocks, paraBlocks)
+    // Below identical map is used to isolate the impact of locality of CheckpointRDD
+    val isoRDD = dataBlocks.mapPartitions(_.seq, preservesPartitioning=true)
+    val dllht = dataBlocks.mapPartitions(_.map { case (_, DataBlock(termRecs, docRecs)) =>
+      val totalDocSize = docRecs.length
+      val GlobalVars(piGK, nK, _) = globalVarsBc.value
+      parallelized_reduceSplit[Double](totalDocSize, (ds, dn, _) => {
+        var llhSum = 0.0
+        for (di <- ds until dn) {
+          val DocRec(_, docGrp, docData) = docRecs(di)
+
+          val docTopics = SparseVector.zeros[Int](numTopics)
+          var p = 0
+          while (p < docData.length) {
+            var ind = docData(p)
+            if (ind >= 0) {
+              docTopics(docData(p + 1)) += 1
+              p += 2
+            } else {
+              p += 2
+              while (ind < 0) {
+                docTopics(docData(p)) += 1
+                p += 1
+                ind += 1
+              }
+            }
+          }
+          docTopics.compact()
+          val nd = sum(docTopics).toDouble
+          val g = docGrp.value & 0xFFFF
+
+          val used = docTopics.used
+          val index = docTopics.index
+          val data = docTopics.data
+          var i = 0
+          while (i < used) {
+            val sgk = piGK(g, index(i)) * nd
+            llhSum += lgamma(sgk + data(i)) - lgamma(sgk)
+            i += 1
+          }
+          llhSum -= lgamma(2 * nd)
+        }
+        llhSum
+      }, _ + _, closing = true)(newParaExecutionContext(numThreads))
+    }, preservesPartitioning=true).reduce(_ + _)
+
+    dllh = dllht + numDocs * lgamma(nd)
+    _calculated = true
+    this
+  }
+
+  override def calculated: Boolean = _calculated
+
+  override def output(writer: String => Unit): Unit = {
+    if (calculated) {
+      val o = s"total llh=$getTotal, word llh=$wllh, doc llh=$dllh"
+      writer(o)
+    } else {
+      new Exception("Log-likelihood not calculated yet.")
+    }
+  }
+}
+
 object GLDAMetrics {
   def apply(glda: GLDA,
     evalMetrics: Array[String]): Array[GLDAMetrics] = {
     evalMetrics.map { evalMetric =>
       val ldaMetric = evalMetric match {
         case "pplx" => new GLDAPerplexity(glda)
+        case "llh" => new GLDALogLikelihood(glda)
       }
       ldaMetric.calc()
     }
