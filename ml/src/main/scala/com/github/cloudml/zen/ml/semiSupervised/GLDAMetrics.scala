@@ -49,7 +49,7 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
     val globalVarsBc = glda.globalVarsBc
 
     val shippeds = glda.algo.ShipParaBlocks(dataBlocks, paraBlocks)
-    val totalLlh = dataBlocks.zipPartitions(shippeds, preservesPartitioning=true) { (dataIter, shpsIter) =>
+    val totalLlh = dataBlocks.zipPartitions(shippeds) { (dataIter, shpsIter) =>
       dataIter.map { case (_, DataBlock(termRecs, docRecs)) =>
         val totalDocSize = docRecs.length
         implicit val pec = newParaExecutionContext(numThreads)
@@ -98,7 +98,7 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
         val megSums = calcSum_megDenses(piGK, eta, mu_term)
         parallelized_reduceBatch[TermRec, Double](termRecs.iterator, 100, (batch, thid) => {
           val decomp = decomps(thid)
-          var llhSum = 0.0
+          var llhThrd = 0.0
           batch.foreach { termRec =>
             val TermRec(termId, termData) = termRec
             val termTopics = decomp.CV2BV(termVecs(termId))
@@ -115,11 +115,11 @@ class GLDAPerplexity(glda: GLDA) extends GLDAMetrics(glda) {
               totalSum /= (1f + eta) * (1f + mu)
               val ind = docData(docI)
               val termCnt = if (ind >= 0) 1 else -ind
-              llhSum += termCnt * math.log(totalSum)
+              llhThrd += termCnt * math.log(totalSum)
               i += 2
             }
           }
-          llhSum
+          llhThrd
         }, _ + _, closing=true)
       }
     }.reduce(_ + _)
@@ -208,31 +208,29 @@ class GLDALogLikelihood(glda: GLDA) extends GLDAMetrics(glda) {
 
     wllh = paraBlocks.mapPartitions(_.map { pbp =>
       val termRecs = pbp._2.attrs
-      val sk = globalVarsBc.value.nK.map(nk => nk.toDouble / numTerms)
-      val lgamma_sk = sk.map(lgamma(_))
+      val sK = globalVarsBc.value.nK.map(nk => nk.toDouble / numTerms)
+      val lgamma_sK = sK.map(lgamma(_))
+
       parallelized_reduceSplit[Double](termRecs.length, (ws, wn, _) => {
-        var llhSum = 0.0
+        var llhThrd = 0.0
         val decomp = new BVDecompressor(numTopics)
         for (wi <- ws until wn) {
           val termTopics = decomp.CV2BV(termRecs(wi))
           termTopics.activeIterator.foreach { case (k, nwk) =>
-            llhSum += lgamma(sk(k) + nwk) - lgamma_sk(k)
+            llhThrd += lgamma(sK(k) + nwk) - lgamma_sK(k)
           }
         }
-        llhSum
+        llhThrd
       }, _ + _, closing=true)(newParaExecutionContext(numThreads))
-    }, preservesPartitioning=true).reduce(_ + _)
-    val nK = globalVarsBc.value.nK
-    wllh += Range(0, numTopics).par.map { k =>
-      val nk = nK(k).toDouble
-      lgamma(nk) - lgamma(2 * nk)
-    }.sum
+    }).reduce(_ + _)
+    wllh += globalVarsBc.value.nK.par.map(nk => lgamma(nk) - lgamma(2 * nk)).sum
 
     dllh = dataBlocks.mapPartitions(_.map { dbp =>
       val docRecs = dbp._2.DocRecs
       val piGK = globalVarsBc.value.piGK
+
       parallelized_reduceSplit[Double](docRecs.length, (ds, dn, _) => {
-        var llhSum = 0.0
+        var llhThrd = 0.0
         for (di <- ds until dn) {
           val DocRec(_, docGrp, docData) = docRecs(di)
           val docTopics = SparseVector.zeros[Int](numTopics)
@@ -259,14 +257,14 @@ class GLDALogLikelihood(glda: GLDA) extends GLDAMetrics(glda) {
           var i = 0
           while (i < used) {
             val sgk = piGK(g, index(i)) * nd
-            llhSum += lgamma(sgk + data(i)) - lgamma(sgk)
+            llhThrd += lgamma(sgk + data(i)) - lgamma(sgk)
             i += 1
           }
-          llhSum += lgamma(nd) - lgamma(2 * nd)
+          llhThrd += lgamma(nd) - lgamma(2 * nd)
         }
-        llhSum
+        llhThrd
       }, _ + _, closing = true)(newParaExecutionContext(numThreads))
-    }, preservesPartitioning=true).reduce(_ + _)
+    }).reduce(_ + _)
 
     _calculated = true
     this
